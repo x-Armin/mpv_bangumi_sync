@@ -1,0 +1,19 @@
+# mpv_bangumi_sync 配置文件示例
+# 将此文件复制到 script-opts/mpv_bangumi_sync.conf 并修改相应配置
+
+# Bangumi访问令牌（必需）
+# 获取地址：https://next.bgm.tv/demo/access-token
+bgm_access_token=你的访问令牌
+
+# 番剧存储目录（插件只会在这些目录下激活）
+# Windows使用分号分隔多个目录，Linux/Mac使用冒号分隔
+# 示例：
+# storages=D:/Anime;E:/Anime
+# storages=/home/user/Anime:/mnt/nas/Anime
+storages=你的番剧存储目录路径
+
+# dandanplay应用ID（可选）
+# dandanplay_appid=*****
+# dandanplay应用密钥（可选）
+# dandanplay_appsecret=你的密钥
+

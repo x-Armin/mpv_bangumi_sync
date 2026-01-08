@@ -1,0 +1,4 @@
+/types
+/lib/.*
+/bin/*
+.vscode/
