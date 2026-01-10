@@ -7,12 +7,7 @@ Options = {
   -- 番剧存储目录（插件只会在这些目录下激活）
   -- 可以设置多个目录，用分号分隔（Windows）或冒号分隔（Linux/Mac）
   storages = "",
-  
-  -- dandanplay应用ID（可选，有默认值）
-  dandanplay_appid = "",
-  
-  -- dandanplay应用密钥（可选）
-  dandanplay_appsecret = "",
+
 }
 
 opt.read_options(Options, mp.get_script_name(), function() end)
@@ -42,16 +37,6 @@ Options.storages_list = parse_storages(Options.storages)
 -- 如果没有设置access_token，尝试从环境变量读取
 if not Options.bgm_access_token or Options.bgm_access_token == "" then
   Options.bgm_access_token = os.getenv("BGM_ACCESS_TOKEN") or ""
-end
-
--- 如果没有设置dandanplay_appid，使用默认值
-if not Options.dandanplay_appid or Options.dandanplay_appid == "" then
-  Options.dandanplay_appid = os.getenv("DANDANPLAY_APPID") or "3tm7ddc5gh"
-end
-
--- 如果没有设置dandanplay_appsecret，尝试从环境变量读取
-if not Options.dandanplay_appsecret or Options.dandanplay_appsecret == "" then
-  Options.dandanplay_appsecret = os.getenv("DANDANPLAY_APPSECRET") or ""
 end
 
 return Options

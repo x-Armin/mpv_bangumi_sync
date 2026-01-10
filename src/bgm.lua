@@ -28,6 +28,7 @@ local function construct_episode_match(episode_id)
   end)
   
   if not anime_info or not anime_info.episodes then
+    mp.msg.error("无法获取anime信息以构造episode match")
     return nil
   end
   
@@ -78,7 +79,6 @@ function M.match(force_id)
   end
   
   -- 检查是否在存储路径中
-  mp.msg.info("match check path ")
   if not is_in_storage_path(file_path) then
     mp.msg.verbose("视频不在存储路径中，跳过: " .. file_path)
     return {
@@ -120,7 +120,11 @@ function M.match(force_id)
     episode_id = db_record.dandanplay_id
     episode_info = db.get_episode_info(episode_id)
     if not episode_info then
+      mp.msg.info("db no episode info")
       episode_info = construct_episode_match(episode_id)
+      if not episode_info then
+        episode_info = get_match_info(file_path)[1]
+      end
       if episode_info then
         db.set_dandanplay_id(file_path, episode_info.episodeId)
         db.set_episode_info(episode_id, episode_info)

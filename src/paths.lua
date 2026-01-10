@@ -38,15 +38,21 @@ local function get_mpv_config_dir()
   end
   
   if platform == "windows" then
-    return mp_utils.join_path(home, "AppData", "Roaming", "mpv")
+    local p = mp_utils.join_path(home, "AppData")
+    p = mp_utils.join_path(p, "Roaming")
+    p = mp_utils.join_path(p, "mpv")
+    return p
   else
-    return mp_utils.join_path(home, ".config", "mpv")
+    local p = mp_utils.join_path(home, ".config")
+    p = mp_utils.join_path(p, "mpv")
+    return p
   end
 end
 
 -- 获取数据目录（用于存储缓存和数据库）
 function M.get_data_path()
   local config_dir = get_mpv_config_dir()
+  mp.msg.verbose("get_data_path: config_dir is " .. tostring(config_dir))
   if not config_dir then
     return nil
   end

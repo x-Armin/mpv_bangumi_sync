@@ -12,8 +12,3 @@ bgm_access_token=你的访问令牌
 # storages=/home/user/Anime:/mnt/nas/Anime
 storages=你的番剧存储目录路径
 
-# dandanplay应用ID（可选）
-# dandanplay_appid=*****
-# dandanplay应用密钥（可选）
-# dandanplay_appsecret=你的密钥
-

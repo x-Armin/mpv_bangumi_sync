@@ -137,12 +137,10 @@ end
 
 -- 获取剧集信息
 function M.get_episode_info(episode_id)
-  local info_path = mp_utils.join_path(
-    METADATA_PATH,
-    tostring(math.floor(episode_id / 10000)),
-    tostring(episode_id) .. ".json"
-  )
-  
+  local anime_dir = tostring(math.floor(episode_id / 10000))
+  local filename = tostring(episode_id) .. ".json"
+  local info_path = mp_utils.join_path(mp_utils.join_path(METADATA_PATH, anime_dir), filename)
+
   local info = mp_utils.file_info(info_path)
   if not info or not info.is_file then
     return nil

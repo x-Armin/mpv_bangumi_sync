@@ -1,14 +1,10 @@
 local http = require "src.http"
 local mp_utils = require "mp.utils"
-local config = require "src.config"
 
 local M = {}
 
 local BASE_API = "https://api.dandanplay.net/api/v2/"
 
--- 获取appid和secret
--- local appid = config.config.dandanplay_appid or "****"
--- local secret = config.config.dandanplay_appsecret or "********"
 local appid = ""
 local secret = ""
 
@@ -181,6 +177,7 @@ function M.get_anime_info(anime_id)
     return nil
   end
   
+  mp.msg.verbose("Got anime info: " .. tostring(res.body.bangumi and res.body.bangumi.animeTitle and res.status_code))
   return res.body.bangumi
 end
 

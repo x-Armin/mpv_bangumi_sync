@@ -34,9 +34,6 @@ bgm_access_token=你的访问令牌
 # 番剧存储目录（多个目录用分号/冒号分隔）
 storages=D:/Anime;E:/Anime
 
-# dandanplay 应用ID/密钥（可选）
-# dandanplay_appid=123456
-# dandanplay_appsecret=你的密钥
 ```
 
 ## 使用
