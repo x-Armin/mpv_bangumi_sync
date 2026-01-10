@@ -1,6 +1,6 @@
 # mpv_bangumi_sync
 
-在 mpv 中自动同步 Bangumi 追番进度。
+使用 mpv 播放动画时，自动同步 Bangumi 追番进度。
 
 （由于本项目依赖弹弹play API匹配番剧信息，但目前还没有申请到AppId 和 AppSecret，所以目前还不可用，不过如果你有id可以直接填上，已经验证功能是可用的）
 
@@ -48,6 +48,7 @@ storages=D:/Anime;E:/Anime
 - 插件只在 `storages` 指定的目录下生效
 
 ## 后续开发计划
+本项目只专注与bgm相关的功能，后续也不会添加比较重型的功能
 1. 适配补番逻辑，避免短时间每集都标记一次导致刷屏 Bangumi 时间线
 2. 适配 uosc，添加按钮弹出同步信息窗口，例如：
 ```
@@ -59,4 +60,4 @@ storages=D:/Anime;E:/Anime
 ```
 
 ## 感谢
-本项目大量借用 [mpv_bangumi](https://github.com/slqy123/mpv_bangumi)，在此基础上重构了弹弹play匹配与 HTTP 接口，移除了对 Python 和闭源可执行程序的依赖。
+本项目大量借用 [mpv_bangumi](https://github.com/slqy123/mpv_bangumi)的代码，在此基础上删除了弹幕功能，移除了对 Python 和闭源可执行程序的依赖，纯lua实现。
