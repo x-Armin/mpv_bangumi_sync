@@ -48,6 +48,10 @@ function M.request(url, options)
     table.insert(args, json_data)
   end
 
+  -- 让 curl 在输出末尾写入一个可识别的状态码标记，便于解析真实的 HTTP status
+  table.insert(args, "-w")
+  table.insert(args, "\n__HTTP_STATUS__:%{http_code}")
+
   table.insert(args, url)
 
   -- 执行curl命令
@@ -59,16 +63,47 @@ function M.request(url, options)
     capture_stderr = true,
   })
 
-  if result.status ~= 0 then
-    mp.msg.error("HTTP request failed: " .. (result.stderr or ""))
-    return nil
+  -- 日志：打印 subprocess 返回的 result（尽量 JSON 序列化，否则输出关键字段）
+  do
+    local ok, s = pcall(function() return mp_utils.format_json(result) end)
+    if ok and s then
+      mp.msg.verbose("http.request subprocess result: " .. s)
+    else
+      mp.msg.verbose(string.format(
+        "http.request subprocess result.status=%s stderr=%s stdout_len=%s",
+        tostring(result and result.status or "nil"),
+        tostring(result and result.stderr or "<empty>"),
+        tostring(#(result and result.stdout or ""))
+      ))
+    end
   end
 
-  local body = result.stdout or ""
+  if result.status ~= 0 then
+    mp.msg.error("HTTP request subprocess failed: " .. (result.stderr or ""))
+  end
+
+  local stdout = result.stdout or ""
+  -- 解析通过 -w 写入的状态码标记，格式为 "__HTTP_STATUS__:XXX" 位于输出末尾
+  local status_code = tonumber(stdout:match("__HTTP_STATUS__:(%d%d%d)%s*$"))
+  local body = stdout:gsub("\n__HTTP_STATUS__:%d%d%d%s*$", "")
   local json_body = mp_utils.parse_json(body)
-  
+
+  -- 打印原始 body 与解析后的 json_body 和解析到的 HTTP status
+  mp.msg.verbose("http.request raw_body: " .. (body ~= "" and body or "<empty>"))
+  if json_body then
+    local ok, s = pcall(function() return mp_utils.format_json(json_body) end)
+    if ok and s then
+      mp.msg.verbose("http.request json_body: " .. s)
+    else
+      mp.msg.verbose("http.request json_body (tostring): " .. tostring(json_body))
+    end
+  else
+    mp.msg.verbose("http.request json_body: nil")
+  end
+  mp.msg.verbose("http.request parsed http status: " .. tostring(status_code or "nil"))
+
   return {
-    status_code = 200, -- curl成功返回200，实际需要从响应头获取
+    status_code = status_code or 0,
     body = json_body or body,
     raw_body = body,
   }

@@ -5,6 +5,15 @@ local config = require "src.config"
 
 local M = {}
 
+-- 辅助：安全序列化任意值为 JSON 字符串用于日志
+local function dump_for_log(v)
+  if not v then return "nil" end
+  if type(v) ~= "table" then return tostring(v) end
+  local ok, s = pcall(function() return mp_utils.format_json(v) end)
+  if ok and s then return s end
+  return tostring(v)
+end
+
 local API_URL = "https://api.bgm.tv"
 local USERNAME_FILE = mp_utils.join_path(paths.DATA_PATH, "username.json")
 
@@ -82,6 +91,7 @@ function M.get(uri, params)
     return {status_code = 500, body = {}}
   end
   
+  mp.msg.verbose("bangumi_api GET response: " .. dump_for_log(res))
   res.status_code = res.status_code or 200
   return res
 end
@@ -98,6 +108,7 @@ function M.post(uri, data)
     return {status_code = 500, body = {}}
   end
   
+  mp.msg.verbose("bangumi_api POST response: " .. dump_for_log(res))
   res.status_code = res.status_code or 200
   return res
 end
@@ -114,6 +125,7 @@ function M.put(uri, data)
     return {status_code = 500, body = {}}
   end
   
+  mp.msg.verbose("bangumi_api PUT response: " .. dump_for_log(res))
   res.status_code = res.status_code or 200
   return res
 end
