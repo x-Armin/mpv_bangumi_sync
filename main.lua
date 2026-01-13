@@ -25,8 +25,9 @@ local function init_after_bangumi_id()
     resp = function(resp)
       if resp.update_message then
         mp.osd_message(resp.update_message, 3)
+        mp.msg.info("Bangumi 收藏状态更新成功:", resp.update_message)
       else
-        mp.msg.verbose "Collection status unchanged"
+        mp.msg.verbose "收藏状态未改变"
       end
       BangumiSucessFlag = BangumiSucessFlag + 1
     end,
@@ -36,7 +37,7 @@ local function init_after_bangumi_id()
   }
   bgm.fetch_episodes().async {
     resp = function(_)
-      mp.msg.verbose "Fetch episodes success"
+      mp.msg.info("获取剧集信息成功!")
       BangumiSucessFlag = BangumiSucessFlag + 1
     end,
     err = function(err)
@@ -54,7 +55,7 @@ local function init_after_bangumi_id()
       return
     end
     if BangumiSucessFlag ~= 2 then
-      mp.msg.verbose "Bangumi collection or episodes not updated or failed, skip update."
+      mp.msg.verbose "Bangumi 收藏或剧集未更新或更新失败，跳过更新"
       return
     end
     if UpdateEpisodeTimer then
@@ -63,8 +64,8 @@ local function init_after_bangumi_id()
       bgm.update_episode().async {
         resp = function(data)
           if data.skipped then
-            mp.msg.verbose "同步Bangumi追番记录进度成功（无需更新）"
-            mp.osd_message("同步Bangumi追番记录进度成功（无需更新）")
+            mp.msg.info "同步Bangumi追番记录进度成功（无需更新）"
+            ("同步Bangumi追番记录进度成功（无需更新）")
           else
             mp.msg.info "同步Bangumi追番记录进度成功"
             mp.osd_message("同步Bangumi追番记录进度成功")

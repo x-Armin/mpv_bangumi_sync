@@ -6,7 +6,6 @@ local M = {}
 local function get_mpv_config_dir()
   -- 检查是否有portable_config
   local script_dir = mp.get_script_directory()
-  mp.msg.info("get_mpv_config_dir: script_dir is " .. tostring(script_dir))
   if script_dir then
     -- 规范化路径
     script_dir = mp.command_native({"normalize-path", script_dir})
@@ -14,7 +13,7 @@ local function get_mpv_config_dir()
     script_dir = script_dir:gsub("\\", "/")
     -- 获取scripts目录（支持正斜杠和反斜杠）
     local scripts_dir = script_dir:match("^(.+)[/\\][^/\\]+$")
-    mp.msg.info("get_mpv_config_dir: scripts_dir is " .. tostring(scripts_dir))
+    mp.msg.verbose("get_mpv_config_dir: scripts_dir is " .. tostring(scripts_dir))
     if scripts_dir then
       local portable_config = scripts_dir:match("^(.+)[/\\][^/\\]+$")
       portable_config = mp.command_native({"normalize-path", portable_config})

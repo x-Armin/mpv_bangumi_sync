@@ -68,7 +68,6 @@ end
 
 -- 匹配视频（force_id可选）
 function M.match(force_id)
-  mp.msg.info("match begin: ")
   local file_path = mp.get_property("path")
   file_path = mp.command_native({"normalize-path", file_path})
   local file_info = mp_utils.file_info(file_path)
@@ -120,7 +119,6 @@ function M.match(force_id)
     episode_id = db_record.dandanplay_id
     episode_info = db.get_episode_info(episode_id)
     if not episode_info then
-      mp.msg.info("db no episode info")
       episode_info = construct_episode_match(episode_id)
       if not episode_info then
         episode_info = get_match_info(file_path)[1]
@@ -131,15 +129,13 @@ function M.match(force_id)
       end
     end
   else
-    
-  mp.msg.info("match auto match")
+
     -- 尝试自动加载
     local dir_path = file_path:match("^(.+)/[^/]+$") or file_path:match("^(.+)\\[^\\]+$") or ""
     local filename = file_path:match("([^/\\]+)$") or file_path
     local autoload_id = db.get_autoload_source(dir_path, filename)
     if autoload_id then
-      
-      mp.msg.info("match autoload_id: " .. autoload_id)
+
       episode_id = autoload_id
       episode_info = db.get_episode_info(episode_id)
       if not episode_info then
@@ -155,7 +151,6 @@ function M.match(force_id)
         db.set_dandanplay_id(file_path, episode_info.episodeId)
       end
     else
-      mp.msg.info("match  video_info")
       -- 匹配视频
       local matches = get_match_info(file_path)
       if #matches > 1 then
