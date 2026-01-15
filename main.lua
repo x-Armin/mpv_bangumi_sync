@@ -1,11 +1,14 @@
 require "src.options"
 local bgm = require "src.bgm"
 local mp_utils = require "mp.utils"
+local db = require "src.db"
 local utils = require "src.utils"
 local input = require "mp.input"
 
 -- global variables
 AnimeInfo = nil
+CurrentEpisodeInfo = nil
+EpisodeStatusText = "未获取"
 UpdateEpisodeTimer = nil
 BangumiSucessFlag = 0
 MatchResults = nil
@@ -98,12 +101,77 @@ end
 
 local function reset_globals()
   AnimeInfo = nil
+  CurrentEpisodeInfo = nil
+  EpisodeStatusText = "未获取"
   if UpdateEpisodeTimer then
     UpdateEpisodeTimer:kill()
     UpdateEpisodeTimer = nil
   end
   BangumiSucessFlag = 0
   MatchResults = nil
+end
+
+local function map_episode_status(status)
+  local status_map = {
+    [0] = "未看",
+    [1] = "想看",
+    [2] = "已看",
+    [3] = "搁置",
+    [4] = "抛弃",
+  }
+  return status_map[status] or "未知"
+end
+
+local function update_episode_status_from_cache()
+  if not CurrentEpisodeInfo or not CurrentEpisodeInfo.episodeId then
+    return
+  end
+
+  local episodes_path = db.get_path(CurrentEpisodeInfo.episodeId, "episodes")
+  local info = mp_utils.file_info(episodes_path)
+  if not info or not info.is_file then
+    return
+  end
+
+  local file = io.open(episodes_path, "r")
+  if not file then
+    return
+  end
+
+  local content = file:read("*all")
+  file:close()
+  local episodes_data = mp_utils.parse_json(content)
+  if not episodes_data or not episodes_data.data then
+    return
+  end
+
+  local episodes = episodes_data.data
+  local ep = CurrentEpisodeInfo.episodeId % 10000
+  local target = nil
+
+  if ep > 1000 then
+    local title = CurrentEpisodeInfo.episodeTitle or ""
+    local max_conf = 0
+    for _, ep_info in ipairs(episodes) do
+      local conf1 = utils.fuzzy_match_title(title, ep_info.episode and ep_info.episode.name or "")
+      local conf2 = utils.fuzzy_match_title(title, ep_info.episode and ep_info.episode.name_cn or "")
+      local conf = math.max(conf1, conf2)
+      if conf > max_conf then
+        max_conf = conf
+        target = ep_info
+      end
+    end
+  else
+    for _, ep_info in ipairs(episodes) do
+      if ep_info.episode and ep_info.episode.ep == ep then
+        target = ep_info
+        break
+      end
+    end
+  end
+
+  local status = target and (target.type or target.status or (target.episode and target.episode.status)) or nil
+  EpisodeStatusText = map_episode_status(status)
 end
 
 local function init_after_bangumi_id()
@@ -124,6 +192,7 @@ local function init_after_bangumi_id()
   bgm.fetch_episodes().async {
     resp = function(_)
       mp.msg.info("获取剧集信息成功!")
+      update_episode_status_from_cache()
       BangumiSucessFlag = BangumiSucessFlag + 1
     end,
     err = function(err)
@@ -155,6 +224,7 @@ local function init_after_bangumi_id()
           else
             mp.msg.info "同步Bangumi追番记录进度成功"
             mp.osd_message("同步Bangumi追番记录进度成功")
+            EpisodeStatusText = "已看"
           end
         end,
         err = function(err)
@@ -179,6 +249,10 @@ local function init(episode_id)
         mp.osd_message("匹配结果不唯一，请手动选择", 3)
         MatchResults = data.matches
         return
+      end
+
+      if data and data.info then
+        CurrentEpisodeInfo = data.info
       end
 
       bgm.update_metadata().async {
@@ -212,8 +286,7 @@ end)
 -- key bindings
 
 local key_bindings = {
-  ["Alt+o"] = { "open-bangumi-url" },
-  ["Alt+m"] = { "manual-match" },
+  ["Alt+o"] = { "open-bangumi-info" },
 }
 
 for key, binding in pairs(key_bindings) do
@@ -233,6 +306,51 @@ mp.register_script_message("open-bangumi-url", function()
     return
   end
   bgm.open_url(AnimeInfo.bgm_url).execute()
+end)
+
+mp.register_script_message("open-bangumi-info", function()
+  if not UoscAvailable then
+    mp.osd_message("未安装uosc，无法显示番剧信息窗口", 3)
+    return
+  end
+  local title = (CurrentEpisodeInfo and CurrentEpisodeInfo.animeTitle) or get_default_search_query() or "未获取"
+  local episode_title = (CurrentEpisodeInfo and CurrentEpisodeInfo.episodeTitle) or "未获取"
+  local status_title = "状态：" .. EpisodeStatusText
+  local status_italic = false
+  local status_muted = false
+  if EpisodeStatusText == "已看" then
+    status_title = "状态：已看 ✔"
+  elseif EpisodeStatusText == "未看" then
+    status_italic = true
+    status_muted = true
+  end
+  local items = {
+    { title = episode_title,
+      value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
+      selectable = true, keep_open = true },
+    { title = "进度：-- / --", value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
+      selectable = true, keep_open = true },
+    { title = status_title, italic = status_italic, muted = status_muted,
+      value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
+      selectable = true, keep_open = true },
+    { title = "搜索番剧", value = { "script-message-to", mp.get_script_name(), "bgm-open-search-from-info" },
+      selectable = true, keep_open = false },
+    { title = "打开Bangumi页面", value = { "script-message", "open-bangumi-url" },
+      selectable = true, keep_open = true },
+  }
+  open_uosc_menu({
+    type = "menu_bgm_info",
+    title = title,
+    search_style = "disabled",
+    items = items,
+  })
+end)
+
+mp.register_script_message("bgm-noop", function() end)
+
+mp.register_script_message("bgm-open-search-from-info", function()
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
+  mp.commandv("script-message", "manual-match")
 end)
 
 mp.register_script_message("bgm-open-search", function()
