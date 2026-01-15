@@ -10,6 +10,114 @@ UpdateEpisodeTimer = nil
 BangumiSucessFlag = 0
 MatchResults = nil
 
+local UoscState = {
+  available = nil,
+  select_callback = nil,
+  input_callback = nil,
+  close_callback = nil,
+}
+
+local function detect_uosc()
+  if UoscState.available ~= nil then
+    return UoscState.available
+  end
+  local scripts = mp.get_property_native("script-list") or {}
+  for _, script in ipairs(scripts) do
+    if type(script) == "table" then
+      if script.name == "uosc" or script.filename == "uosc.lua" then
+        UoscState.available = true
+        return true
+      end
+    elseif script == "uosc" then
+      UoscState.available = true
+      return true
+    end
+  end
+  UoscState.available = false
+  return false
+end
+
+mp.register_script_message("bangumi-uosc-input", function(text)
+  if UoscState.input_callback then
+    UoscState.input_callback(text)
+  end
+end)
+
+mp.register_script_message("bangumi-uosc-select", function(idx)
+  if UoscState.select_callback then
+    UoscState.select_callback(tonumber(idx))
+  end
+end)
+
+mp.register_script_message("bangumi-uosc-close", function()
+  if UoscState.close_callback then
+    UoscState.close_callback()
+  end
+end)
+
+local function open_uosc_input(opts)
+  UoscState.input_callback = opts.submit
+  UoscState.close_callback = opts.closed
+  local payload = {
+    title = opts.prompt or "",
+    value = opts.default or "",
+    submit = "script-message bangumi-uosc-input",
+    closed = "script-message bangumi-uosc-close",
+  }
+  mp.commandv(
+    "script-message-to",
+    "uosc",
+    "open-input",
+    mp_utils.format_json(payload)
+  )
+end
+
+local function open_uosc_select(opts)
+  UoscState.select_callback = opts.submit
+  UoscState.close_callback = opts.closed
+  local items = {}
+  for i, item in ipairs(opts.items or {}) do
+    items[i] = {
+      title = item,
+      command = string.format("script-message bangumi-uosc-select %d", i),
+    }
+  end
+  local payload = {
+    title = opts.prompt or "",
+    items = items,
+    closed = "script-message bangumi-uosc-close",
+  }
+  mp.commandv(
+    "script-message-to",
+    "uosc",
+    "open-menu",
+    mp_utils.format_json(payload)
+  )
+end
+
+local function input_terminate()
+  if detect_uosc() then
+    return
+  end
+  input.terminate()
+end
+
+local function open_input(opts)
+  if detect_uosc() then
+    open_uosc_input(opts)
+    return
+  end
+  input.get(opts)
+end
+
+local function open_select(opts)
+  if detect_uosc() then
+    open_uosc_select(opts)
+    return
+  end
+  input.select(opts)
+end
+
 local function reset_globals()
   AnimeInfo = nil
   if UpdateEpisodeTimer then
@@ -166,7 +274,7 @@ mp.register_script_message("manual-match", function()
         for i, item in ipairs(data) do
           episode_items[i] = item.title
         end
-        input.select {
+        open_select {
           prompt = "请选择正确剧集：",
           items = episode_items,
           submit = function(idx)
@@ -200,8 +308,8 @@ mp.register_script_message("manual-match", function()
     for i, item in ipairs(data) do
       anime_items[i] = string.format("%d. %s\t[%s]", i, item.title, item.type)
     end
-    input.terminate()
-    input.select {
+    input_terminate()
+    open_select {
       prompt = "请选择正确番剧：",
       items = anime_items,
       submit = function(idx)
@@ -218,8 +326,8 @@ mp.register_script_message("manual-match", function()
 
   mp.set_property("pause", "yes")
   if not MatchResults then
-    input.terminate()
-    input.get {
+    input_terminate()
+    open_input {
       prompt = "请输入番剧名：",
       submit = function(text)
         bgm.dandanplay_search(text).async {
@@ -247,7 +355,7 @@ mp.register_script_message("manual-match", function()
   end
   match_items[#match_items + 1] = "没有结果，手动搜索"
 
-  input.select {
+  open_select {
     prompt = "请选择匹配结果：",
     items = match_items,
     submit = function(idx)
@@ -257,7 +365,7 @@ mp.register_script_message("manual-match", function()
       end
       if idx == #match_items then
         mp.msg.verbose "选择了手动搜索"
-        input.terminate()
+        input_terminate()
         MatchResults = nil
         mp.command "script-message manual-match"
         return
