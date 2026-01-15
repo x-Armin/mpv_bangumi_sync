@@ -9,6 +9,92 @@ AnimeInfo = nil
 UpdateEpisodeTimer = nil
 BangumiSucessFlag = 0
 MatchResults = nil
+UoscAvailable = false
+
+mp.register_script_message("uosc-version", function()
+  UoscAvailable = true
+end)
+
+local function format_menu_item(message)
+  return {
+    title = message,
+    value = "",
+    italic = true,
+    keep_open = true,
+    selectable = false,
+    align = "center",
+  }
+end
+
+local function open_uosc_menu(props)
+  local json_props = utils.format_json(props)
+  mp.commandv("script-message-to", "uosc", "open-menu", json_props)
+end
+
+local function update_uosc_menu(props)
+  local json_props = utils.format_json(props)
+  mp.commandv("script-message-to", "uosc", "update-menu", json_props)
+end
+
+local function get_default_search_query()
+  local path = mp.get_property("path")
+  if not path then
+    mp.msg.info("default-search: missing path")
+    return nil
+  end
+  local filename = path:match("([^/\\]+)$") or path
+  mp.msg.info("default-search: raw filename=" .. tostring(filename))
+  filename = filename:match("^(.+)%.[^%.]+$") or filename
+  mp.msg.info("default-search: no-ext filename=" .. tostring(filename))
+  local cleaned = filename
+  cleaned = cleaned:gsub("%b[]", "")
+  cleaned = cleaned:gsub("%b()", "")
+  cleaned = cleaned:gsub("[Ss]%d+[Ee]%d+", "")
+  cleaned = cleaned:gsub("[Ee]%d+", "")
+  cleaned = cleaned:gsub("_", " ")
+  cleaned = cleaned:gsub("%s+", " "):gsub("^%s*(.-)%s*$", "%1")
+  mp.msg.info("default-search: parsed title=" .. tostring(cleaned))
+  return cleaned ~= "" and cleaned or filename
+end
+
+local function open_anime_search_menu(query)
+  local menu_props = {
+    type = "menu_bgm_anime",
+    title = "输入番剧名称",
+    search_style = "palette",
+    search_debounce = "submit",
+    search_suggestion = query,
+    on_search = { "script-message-to", mp.get_script_name(), "bgm-search-anime" },
+    footnote = "使用 enter 或 ctrl+enter 进行搜索",
+    items = {},
+  }
+  open_uosc_menu(menu_props)
+end
+
+local function open_match_menu()
+  local items = {}
+  for i, match in ipairs(MatchResults or {}) do
+    items[i] = {
+      title = string.format("%d. %s - %s", i, match.animeTitle, match.episodeTitle),
+      value = { "script-message-to", mp.get_script_name(), "bgm-select-match", match.episodeId },
+      keep_open = false,
+      selectable = true,
+    }
+  end
+  items[#items + 1] = {
+    title = "没有结果，手动搜索",
+    value = { "script-message-to", mp.get_script_name(), "bgm-open-search" },
+    keep_open = false,
+    selectable = true,
+  }
+  local menu_props = {
+    type = "menu_bgm_match",
+    title = "请选择匹配结果",
+    search_style = "disabled",
+    items = items,
+  }
+  open_uosc_menu(menu_props)
+end
 
 local function reset_globals()
   AnimeInfo = nil
@@ -149,7 +235,158 @@ mp.register_script_message("open-bangumi-url", function()
   bgm.open_url(AnimeInfo.bgm_url).execute()
 end)
 
+mp.register_script_message("bgm-open-search", function()
+  MatchResults = nil
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_match")
+  open_anime_search_menu(get_default_search_query())
+end)
+
+mp.register_script_message("bgm-search-anime", function(query)
+  if not query or query == "" then
+    update_uosc_menu({
+      type = "menu_bgm_anime",
+      title = "输入番剧名称",
+      search_style = "palette",
+      search_debounce = "submit",
+      search_suggestion = "",
+      on_search = { "script-message-to", mp.get_script_name(), "bgm-search-anime" },
+      footnote = "使用 enter 或 ctrl+enter 进行搜索",
+      items = { format_menu_item("请输入番剧名称") },
+    })
+    return
+  end
+
+  update_uosc_menu({
+    type = "menu_bgm_anime",
+    title = "输入番剧名称",
+    search_style = "palette",
+    search_debounce = "submit",
+    search_suggestion = query,
+    on_search = { "script-message-to", mp.get_script_name(), "bgm-search-anime" },
+    footnote = "正在加载搜索结果...",
+    items = { format_menu_item("加载中...") },
+  })
+
+  bgm.dandanplay_search(query).async {
+    resp = function(data)
+      local items = {}
+      for i, item in ipairs(data or {}) do
+        items[i] = {
+          title = item.title,
+          hint = item.type,
+          value = { "script-message-to", mp.get_script_name(), "bgm-search-episodes", item.title, item.id },
+          keep_open = false,
+          selectable = true,
+        }
+      end
+      if #items == 0 then
+        items = { format_menu_item("无搜索结果") }
+      end
+      update_uosc_menu({
+        type = "menu_bgm_anime",
+        title = "输入番剧名称",
+        search_style = "palette",
+        search_debounce = "submit",
+        search_suggestion = query,
+        on_search = { "script-message-to", mp.get_script_name(), "bgm-search-anime" },
+        footnote = "使用 enter 或 ctrl+enter 进行搜索",
+        items = items,
+      })
+    end,
+    err = function(err)
+      mp.msg.error("搜索番剧失败:", err)
+      update_uosc_menu({
+        type = "menu_bgm_anime",
+        title = "输入番剧名称",
+        search_style = "palette",
+        search_debounce = "submit",
+        search_suggestion = query,
+        on_search = { "script-message-to", mp.get_script_name(), "bgm-search-anime" },
+        footnote = "搜索失败，请重试",
+        items = { format_menu_item("搜索番剧失败") },
+      })
+    end,
+  }
+end)
+
+mp.register_script_message("bgm-search-episodes", function(anime_title, anime_id)
+  if not anime_id then
+    mp.msg.error "无效的番剧ID"
+    return
+  end
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_anime")
+
+  open_uosc_menu({
+    type = "menu_bgm_episodes",
+    title = string.format("选择剧集: %s", anime_title),
+    search_style = "on_demand",
+    footnote = "正在加载剧集...",
+    items = { format_menu_item("加载中...") },
+  })
+
+  bgm.get_dandanplay_episodes(anime_id).async {
+    resp = function(data)
+      local items = {}
+      for i, item in ipairs(data or {}) do
+        items[i] = {
+          title = item.title,
+          hint = tostring(i),
+          value = { "script-message-to", mp.get_script_name(), "bgm-select-episode", item.id },
+          keep_open = false,
+          selectable = true,
+        }
+      end
+      if #items == 0 then
+        items = { format_menu_item("没有找到匹配的剧集") }
+      end
+      update_uosc_menu({
+        type = "menu_bgm_episodes",
+        title = string.format("选择剧集: %s", anime_title),
+        search_style = "on_demand",
+        footnote = "使用 / 打开筛选",
+        items = items,
+      })
+    end,
+    err = function(err)
+      mp.msg.error("获取剧集信息失败:", err)
+      update_uosc_menu({
+        type = "menu_bgm_episodes",
+        title = string.format("选择剧集: %s", anime_title),
+        search_style = "on_demand",
+        footnote = "获取失败，请重试",
+        items = { format_menu_item("获取剧集信息失败") },
+      })
+    end,
+  }
+end)
+
+mp.register_script_message("bgm-select-episode", function(episode_id)
+  if not episode_id then
+    mp.msg.error "无效的集数ID"
+    return
+  end
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_episodes")
+  init(episode_id)
+end)
+
+mp.register_script_message("bgm-select-match", function(episode_id)
+  if not episode_id then
+    mp.msg.error "无效的集数ID"
+    return
+  end
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_match")
+  init(episode_id)
+end)
+
 mp.register_script_message("manual-match", function()
+  if UoscAvailable then
+    if MatchResults then
+      open_match_menu()
+      return
+    end
+    open_anime_search_menu(get_default_search_query())
+    return
+  end
   local select_episode = function(anime_id)
     if not anime_id then
       mp.msg.error "无效的番剧ID"
