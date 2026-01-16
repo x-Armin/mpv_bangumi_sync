@@ -9,6 +9,7 @@ local input = require "mp.input"
 AnimeInfo = nil
 CurrentEpisodeInfo = nil
 EpisodeStatusText = "未获取"
+EpisodeProgressText = "未获取"
 UpdateEpisodeTimer = nil
 BangumiSucessFlag = 0
 MatchResults = nil
@@ -103,12 +104,17 @@ local function reset_globals()
   AnimeInfo = nil
   CurrentEpisodeInfo = nil
   EpisodeStatusText = "未获取"
+  EpisodeProgressText = "未获取"
   if UpdateEpisodeTimer then
     UpdateEpisodeTimer:kill()
     UpdateEpisodeTimer = nil
   end
   BangumiSucessFlag = 0
   MatchResults = nil
+end
+
+local function get_episode_status_value(ep_info)
+  return ep_info and (ep_info.type or ep_info.status or (ep_info.episode and ep_info.episode.status)) or nil
 end
 
 local function map_episode_status(status)
@@ -148,6 +154,16 @@ local function update_episode_status_from_cache()
   local episodes = episodes_data.data
   local ep = CurrentEpisodeInfo.episodeId % 10000
   local target = nil
+  local total = #episodes
+  local watched = 0
+
+  for _, ep_info in ipairs(episodes) do
+    local status_value = get_episode_status_value(ep_info)
+    if status_value == 2 then
+      watched = watched + 1
+    end
+  end
+  EpisodeProgressText = string.format("%d / %d", watched, total)
 
   if ep > 1000 then
     local title = CurrentEpisodeInfo.episodeTitle or ""
@@ -170,7 +186,7 @@ local function update_episode_status_from_cache()
     end
   end
 
-  local status = target and (target.type or target.status or (target.episode and target.episode.status)) or nil
+  local status = get_episode_status_value(target)
   EpisodeStatusText = map_episode_status(status)
 end
 
@@ -328,14 +344,14 @@ mp.register_script_message("open-bangumi-info", function()
     { title = episode_title,
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
       selectable = true, keep_open = true },
-    { title = "进度：-- / --", value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
+    { title = "进度：" .. EpisodeProgressText, value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
       selectable = true, keep_open = true },
     { title = status_title, italic = status_italic, muted = status_muted,
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
       selectable = true, keep_open = true },
-    { title = "搜索番剧", value = { "script-message-to", mp.get_script_name(), "bgm-open-search-from-info" },
+    { title = "手动匹配", value = { "script-message-to", mp.get_script_name(), "bgm-open-search-from-info" },
       selectable = true, keep_open = false },
-    { title = "打开Bangumi页面", value = { "script-message", "open-bangumi-url" },
+    { title = "打开Bangumi", value = { "script-message", "open-bangumi-url" },
       selectable = true, keep_open = true },
   }
   open_uosc_menu({
