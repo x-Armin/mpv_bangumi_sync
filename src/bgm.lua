@@ -246,6 +246,7 @@ function M.update_metadata()
   
   local episode_id = db_record.dandanplay_id
   local anime_id = math.floor(episode_id / 10000)
+  mp.msg.verbose("Fetching anime info for ID: " .. tostring(anime_id) .. " (episode ID: " .. tostring(episode_id) .. ")")
   
   local anime_info = db.get_or_update(episode_id, "info", function()
     return dandanplay_api.get_anime_info(anime_id)

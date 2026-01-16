@@ -1,12 +1,11 @@
 local http = require "src.http"
-local mp_utils = require "mp.utils"
 
 local M = {}
 
 local BASE_API = "https://api.dandanplay.net/api/v2/"
 
-local appid = ""
-local secret = ""
+local appid_enc = "43ee637dcf24b626fcb6"
+local secret_enc = "02ec7f1fdb38bd75e28cd8fdc4cb9eb6ae04ac574de37e33dd74543e22a01439"
 
 -- 生成SHA256签名 (返回Hex字符串)
 local function sha256(data)
@@ -100,11 +99,52 @@ local function hex_to_base64(hex)
   return result
 end
 
--- 生成签名
+local bit = require("bit")
+
+local function xorshift32(x)
+  x = bit.bxor(x, bit.lshift(x, 13))
+  x = bit.bxor(x, bit.rshift(x, 17))
+  x = bit.bxor(x, bit.lshift(x, 5))
+  return bit.band(x, 0xffffffff)
+end
+
+local function hex_to_bytes(hex)
+  local bytes = {}
+  for i = 1, #hex, 2 do
+    bytes[#bytes + 1] = tonumber(hex:sub(i, i + 1), 16)
+  end
+  return bytes
+end
+
+local function xor_stream_bytes(input_bytes, seed_u32)
+  local out = {}
+  local s = bit.band(seed_u32, 0xffffffff)
+
+  for i = 1, #input_bytes do
+    s = xorshift32(s)
+    local k = bit.band(s, 0xff)
+    out[i] = bit.bxor(input_bytes[i], k)
+  end
+
+  return out
+end
+
+local function decode_hex(hex, seed_u32)
+  local bytes = hex_to_bytes(hex)
+  local dec_bytes = xor_stream_bytes(bytes, seed_u32)
+  local out = {}
+  for i = 1, #dec_bytes do
+    out[i] = string.char(dec_bytes[i])
+  end
+  return table.concat(out)
+end
+
+local SEED = 0xC0FFEE
+
 local function generate_signature(timestamp, path)
-  local data = appid .. timestamp .. path .. secret
+  local data = decode_hex(appid_enc, SEED) .. timestamp .. path .. decode_hex(secret_enc, SEED)
+  mp.msg.verbose("Signature raw data: " .. decode_hex(appid_enc, SEED) .. ";" .. decode_hex(secret_enc, SEED ))
   local hash_hex = sha256(data)
-  -- 关键修正：将SHA256的Hex字符串转为Raw Bytes后再Base64编码
   return hex_to_base64(hash_hex)
 end
 
@@ -116,7 +156,7 @@ function M.post(uri, data, timestamp)
   
   local headers = {
     ["Accept"] = "application/json",
-    ["X-AppId"] = appid,
+    ["X-AppId"] = decode_hex(appid_enc, SEED),
     ["X-signature"] = sig,
     ["X-Timestamp"] = tostring(timestamp),
   }
@@ -136,7 +176,7 @@ function M.get(uri, params)
   
   local headers = {
     ["Accept"] = "application/json",
-    ["X-AppId"] = appid,
+    ["X-AppId"] = decode_hex(appid_enc, SEED),
     ["X-signature"] = sig,
     ["X-Timestamp"] = tostring(timestamp),
   }
