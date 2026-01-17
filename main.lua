@@ -202,6 +202,18 @@ local function update_episode_status_from_cache(episodes_data)
 
   local status = get_episode_status_value(target)
   EpisodeStatusText = map_episode_status(status)
+  if target and target.episode then
+    local ep_no = target.episode.ep
+    if type(ep_no) == "number" and ep_no > 0 then
+      CurrentEpisodeInfo.episodeEp = ep_no
+    end
+    local name_cn = target.episode.name_cn
+    local name = target.episode.name
+    local resolved_title = (name_cn and name_cn ~= "" and name_cn) or (name and name ~= "" and name) or nil
+    if resolved_title then
+      CurrentEpisodeInfo.episodeTitle = resolved_title
+    end
+  end
   return true
 end
 
@@ -241,7 +253,7 @@ local function init_after_bangumi_id()
         resp = function(data)
           if data.skipped then
             mp.msg.info "同步Bangumi追番记录进度成功（无需更新）"
-            ("同步Bangumi追番记录进度成功（无需更新）")
+            mp.osd_message("同步Bangumi追番记录进度成功（无需更新）")
           else
             mp.msg.info "同步Bangumi追番记录进度成功"
             mp.osd_message("同步Bangumi追番记录进度成功")
@@ -343,6 +355,10 @@ mp.register_script_message("open-bangumi-info", function()
   end
   local title = (CurrentEpisodeInfo and CurrentEpisodeInfo.animeTitle) or get_default_search_query() or "未获取"
   local episode_title = (CurrentEpisodeInfo and CurrentEpisodeInfo.episodeTitle) or "未获取"
+  local episode_ep = CurrentEpisodeInfo and CurrentEpisodeInfo.episodeEp
+  if type(episode_ep) == "number" and episode_ep > 0 then
+    episode_title = string.format("第%d话  %s", episode_ep, episode_title)
+  end
   local status_title = "状态：" .. EpisodeStatusText
   local status_italic = false
   local status_muted = false
@@ -359,7 +375,7 @@ mp.register_script_message("open-bangumi-info", function()
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
       keep_open = true },
     { 
-      title = "进度：" .. EpisodeProgressText,
+      title = "进 度  " .. EpisodeProgressText,
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
       keep_open = true },
     { 
