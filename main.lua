@@ -251,6 +251,10 @@ local function init_after_bangumi_id()
       UpdateEpisodeTimer = nil
       bgm.update_episode().async {
         resp = function(data)
+          local updated = update_episode_status_from_cache(data and data.episodes_data or nil)
+          if updated then
+            EpisodesReady = true
+          end
           if data.skipped then
             mp.msg.info "同步Bangumi追番记录进度成功（无需更新）"
             mp.osd_message("同步Bangumi追番记录进度成功（无需更新）")

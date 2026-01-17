@@ -629,7 +629,10 @@ function M.fetch_episodes(opts)
     mp.msg.error("获取剧集列表失败")
     return utils.subprocess_err()
   end
-  
+
+  local changed = mark_episode_watched(episode)
+  persist_episodes_if_needed(changed)
+
   return {
     execute = function()
       return {success = true}
@@ -680,6 +683,35 @@ function M.update_episode()
   local episodes = episodes_data.data
   local bgm_episode_id = nil
   local episode = nil
+  local function mark_episode_watched(ep_info)
+    if not ep_info then
+      return false
+    end
+    local changed = false
+    if ep_info.type ~= 2 then
+      ep_info.type = 2
+      changed = true
+    end
+    if ep_info.status ~= nil and ep_info.status ~= 2 then
+      ep_info.status = 2
+      changed = true
+    end
+    if ep_info.episode and ep_info.episode.status ~= nil and ep_info.episode.status ~= 2 then
+      ep_info.episode.status = 2
+      changed = true
+    end
+    return changed
+  end
+  local function persist_episodes_if_needed(changed)
+    if not changed then
+      return
+    end
+    local out = io.open(episodes_path, "w")
+    if out then
+      out:write(mp_utils.format_json(episodes_data) or "{}")
+      out:close()
+    end
+  end
   
   if ep > 1000 then
     -- 特殊集，通过标题匹配
@@ -729,13 +761,15 @@ function M.update_episode()
   -- 检查是否已标记为看过
   local prev_status = bangumi_api.get_episode_status(bgm_episode_id)
   if prev_status and prev_status.body and prev_status.body.type == 2 then
+    local changed = mark_episode_watched(episode)
+    persist_episodes_if_needed(changed)
     return {
       execute = function()
-        return {progress = ep, total = #episodes, skipped = true}
+        return {progress = ep, total = #episodes, skipped = true, episodes_data = episodes_data}
       end,
       async = function(cb)
         if cb and cb.resp then
-          cb.resp({progress = ep, total = #episodes, skipped = true})
+          cb.resp({progress = ep, total = #episodes, skipped = true, episodes_data = episodes_data})
         end
       end,
     }
@@ -750,11 +784,11 @@ function M.update_episode()
   
   return {
     execute = function()
-      return {progress = ep, total = #episodes}
+      return {progress = ep, total = #episodes, episodes_data = episodes_data}
     end,
     async = function(cb)
       if cb and cb.resp then
-        cb.resp({progress = ep, total = #episodes})
+        cb.resp({progress = ep, total = #episodes, episodes_data = episodes_data})
       end
     end,
   }
