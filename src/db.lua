@@ -137,8 +137,14 @@ function M.get(query)
       local folder = db[normalize_path(dir)]
       local entry = folder and folder.entries and folder.entries[filename] or nil
       if entry then
+        local full_path = entry.path or query.path
+        local now = os.time()
+        if folder then
+          folder.last_seen = now
+          save_db(db)
+        end
         return {
-          path = entry.path or query.path,
+          path = full_path,
           bgm_id = entry.bgm_id,
           dandanplay_id = entry.dandanplay_id,
           anime_id = folder.anime_id,
@@ -161,8 +167,14 @@ function M.get(query)
         match = false
       end
       if match then
+        local full_path = entry.path or (dir .. "/" .. filename)
+        local now = os.time()
+        if folder then
+          folder.last_seen = now
+          save_db(db)
+        end
         return {
-          path = entry.path or (dir .. "/" .. filename),
+          path = full_path,
           bgm_id = entry.bgm_id,
           dandanplay_id = entry.dandanplay_id,
           anime_id = folder.anime_id,
@@ -188,6 +200,7 @@ function M.set_bgm_id(path, id_)
     return false
   end
   entry.bgm_id = id_
+  folder.last_seen = os.time()
   save_db(db)
   return true
 end
@@ -205,6 +218,7 @@ function M.set_dandanplay_id(path, id_)
     return false
   end
   entry.dandanplay_id = id_
+  folder.last_seen = os.time()
   update_folder_anime_id(folder)
   save_db(db)
   return true
@@ -257,6 +271,7 @@ function M.set_manual_selection(path_or_dir, anime_id)
   if anime_id then
     folder.anime_id = anime_id
   end
+  folder.last_seen = os.time()
   save_db(db)
   return true
 end
@@ -388,6 +403,106 @@ function M.get_or_update(episode_id, type_, update_cb, max_age)
   end
   
   return data
+end
+
+local function remove_metadata_dirs(anime_id)
+  if type(anime_id) ~= "number" then
+    return 0
+  end
+  local platform = (mp and mp.get_property_native and mp.get_property_native("platform")) or ""
+  local dir_path = mp_utils.join_path(METADATA_PATH, tostring(anime_id))
+  local info = mp_utils.file_info(dir_path)
+  if info and info.is_dir then
+    if platform == "windows" then
+      local path = dir_path:gsub("/", "\\")
+      os.execute('rmdir /s /q "' .. path .. '"')
+    else
+      os.execute('rm -rf "' .. dir_path .. '"')
+    end
+    return 1
+  end
+  return 0
+end
+
+function M.prune(opts)
+  opts = opts or {}
+  local max_age_days = opts.max_age_days or 180
+  local remove_missing = opts.remove_missing == true
+  local max_folders = opts.max_folders or opts.max_records or 0
+  local db = load_db()
+  local now = os.time()
+  local removed = 0
+  local dirty = false
+  local max_age = max_age_days > 0 and (max_age_days * 24 * 3600) or nil
+  local candidates = {}
+
+  for dir, folder in pairs(db) do
+    local entries = folder.entries
+    if type(entries) ~= "table" then
+      entries = {}
+      folder.entries = entries
+    end
+
+    local folder_last_seen = folder.last_seen or 0
+    if max_age and folder_last_seen == 0 then
+      folder.last_seen = now
+      folder_last_seen = now
+      dirty = true
+    end
+    local is_expired = max_age and (now - folder_last_seen) > max_age
+    local is_missing = false
+    if remove_missing and next(entries) then
+      is_missing = true
+      for filename, entry in pairs(entries) do
+        local full_path = entry.path or (dir .. "/" .. filename)
+        local info = mp_utils.file_info(full_path)
+        if info and info.is_file then
+          is_missing = false
+          break
+        end
+      end
+    end
+
+    if is_expired or is_missing then
+      for _ in pairs(entries) do
+        removed = removed + 1
+      end
+      remove_metadata_dirs(folder.anime_id)
+      db[dir] = nil
+    else
+      if max_folders > 0 then
+        candidates[#candidates + 1] = {dir = dir, last_seen = folder_last_seen}
+      end
+      if not next(entries) and not folder.manual and not folder.anime_id then
+        db[dir] = nil
+      end
+    end
+  end
+
+  if max_folders > 0 and #candidates > max_folders then
+    table.sort(candidates, function(a, b)
+      return a.last_seen < b.last_seen
+    end)
+    local excess = #candidates - max_folders
+    for i = 1, excess do
+      local item = candidates[i]
+      local folder = db[item.dir]
+      if folder then
+        local entries = folder.entries or {}
+        for _ in pairs(entries) do
+          removed = removed + 1
+        end
+        remove_metadata_dirs(folder.anime_id)
+        db[item.dir] = nil
+      end
+    end
+  end
+
+  if removed > 0 or dirty then
+    save_db(db)
+  end
+
+  return removed
 end
 
 return M

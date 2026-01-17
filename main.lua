@@ -16,6 +16,15 @@ EpisodesReady = false
 MatchResults = nil
 UoscAvailable = false
 
+local function prune_db_on_start()
+  local removed = db.prune({max_age_days = 30, remove_missing = false})
+  if removed and removed > 0 then
+    mp.msg.verbose("Pruned db records: " .. tostring(removed))
+  end
+end
+
+prune_db_on_start()
+
 mp.register_script_message("uosc-version", function()
   UoscAvailable = true
 end)
