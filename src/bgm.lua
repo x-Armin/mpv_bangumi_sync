@@ -325,22 +325,47 @@ local function sync_context_execute(opts)
     local matches = get_match_info(file_path)
     mp.msg.verbose("sync_context: match candidates=" .. tostring(#matches))
     if #matches > 1 then
-      local filename = file_path:match("([^/\\]+)$") or file_path
-      local info = utils.extract_info_from_filename(filename)
-      mp.msg.verbose("sync_context: match requires selection")
-      return {
-        status = "select",
-        info = info,
-        matches = format_match_results(matches),
-      }
+      local dir_path = file_path:match("^(.+)/[^/]+$") or file_path:match("^(.+)\\[^\\]+$") or ""
+      local folder_info = dir_path ~= "" and db.get_folder_info(dir_path) or nil
+      if folder_info and folder_info.manual and folder_info.anime_id then
+        for _, match in ipairs(matches) do
+          local match_anime_id = math.floor(match.episodeId / 10000)
+          if match_anime_id == folder_info.anime_id then
+            mp.msg.verbose(
+              "sync_context: auto-pick match by manual anime_id=" .. tostring(folder_info.anime_id)
+            )
+            episode_info = match
+            episode_id = match.episodeId
+            db.set_dandanplay_id(file_path, episode_id)
+            db.set_episode_info(episode_id, episode_info)
+            break
+          end
+        end
+        if not episode_id then
+          mp.msg.verbose("sync_context: manual anime_id not found in candidates")
+        end
+      end
+
+      if not episode_id then
+        local filename = file_path:match("([^/\\]+)$") or file_path
+        local info = utils.extract_info_from_filename(filename)
+        mp.msg.verbose("sync_context: match requires selection")
+        return {
+          status = "select",
+          info = info,
+          matches = format_match_results(matches),
+        }
+      end
     end
 
-    episode_info = matches[1]
-    if episode_info then
-      mp.msg.verbose("sync_context: match picked episode_id=" .. tostring(episode_info.episodeId))
-      episode_id = episode_info.episodeId
-      db.set_dandanplay_id(file_path, episode_id)
-      db.set_episode_info(episode_id, episode_info)
+    if not episode_id then
+      episode_info = matches[1]
+      if episode_info then
+        mp.msg.verbose("sync_context: match picked episode_id=" .. tostring(episode_info.episodeId))
+        episode_id = episode_info.episodeId
+        db.set_dandanplay_id(file_path, episode_id)
+        db.set_episode_info(episode_id, episode_info)
+      end
     end
   end
 
@@ -348,6 +373,12 @@ local function sync_context_execute(opts)
     mp.msg.error("Match failed: " .. file_path)
     mp.msg.verbose("sync_context: no episode_id after match attempts")
     return {status = "error", error = "MatchNotFound", video = file_path}
+  end
+
+  if source == "manual" then
+    local anime_id = math.floor(episode_id / 10000)
+    db.set_manual_selection(file_path, anime_id)
+    mp.msg.verbose("sync_context: stored manual anime_id=" .. tostring(anime_id))
   end
 
   if not episode_info then

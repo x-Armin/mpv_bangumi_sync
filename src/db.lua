@@ -17,6 +17,79 @@ end
 
 ensure_metadata_dir()
 
+local function normalize_path(path)
+  if not path or path == "" then
+    return path
+  end
+  return path:gsub("\\", "/")
+end
+
+local function split_path(path)
+  if not path or path == "" then
+    return nil, nil
+  end
+  local normalized = normalize_path(path)
+  local dir = normalized:match("^(.+)/[^/]+$")
+  local filename = normalized:match("([^/]+)$")
+  return dir, filename
+end
+
+local function ensure_folder(db, dir_path)
+  local key = normalize_path(dir_path)
+  if not key or key == "" then
+    return nil, nil
+  end
+  local folder = db[key]
+  if type(folder) ~= "table" then
+    folder = {}
+    db[key] = folder
+  end
+  if type(folder.entries) ~= "table" then
+    folder.entries = {}
+  end
+  return folder, key
+end
+
+local function ensure_entry(folder, filename, full_path)
+  if not folder or not filename or filename == "" then
+    return nil
+  end
+  local entry = folder.entries[filename]
+  if type(entry) ~= "table" then
+    entry = {}
+    folder.entries[filename] = entry
+  end
+  if full_path and full_path ~= "" then
+    entry.path = full_path
+  end
+  return entry
+end
+
+local function derive_unique_anime_id(entries)
+  local anime_id = nil
+  for _, entry in pairs(entries or {}) do
+    if entry.dandanplay_id then
+      local current = math.floor(entry.dandanplay_id / 10000)
+      if not anime_id then
+        anime_id = current
+      elseif anime_id ~= current then
+        return nil
+      end
+    end
+  end
+  return anime_id
+end
+
+local function update_folder_anime_id(folder)
+  if not folder or folder.manual then
+    return
+  end
+  local anime_id = derive_unique_anime_id(folder.entries)
+  if anime_id then
+    folder.anime_id = anime_id
+  end
+end
+
 -- 加载数据库
 local function load_db()
   local info = mp_utils.file_info(DB_PATH)
@@ -58,81 +131,134 @@ end
 -- 获取记录
 function M.get(query)
   local db = load_db()
-  
-  for path, record in pairs(db) do
-    local match = true
-    if query.path and record.path ~= query.path then
-      match = false
-    end
-    if query.bgm_id and record.bgm_id ~= query.bgm_id then
-      match = false
-    end
-    if query.dandanplay_id and record.dandanplay_id ~= query.dandanplay_id then
-      match = false
-    end
-    
-    if match then
-      return {
-        path = record.path or path,
-        bgm_id = record.bgm_id,
-        dandanplay_id = record.dandanplay_id,
-      }
+  if query.path then
+    local dir, filename = split_path(query.path)
+    if dir and filename then
+      local folder = db[normalize_path(dir)]
+      local entry = folder and folder.entries and folder.entries[filename] or nil
+      if entry then
+        return {
+          path = entry.path or query.path,
+          bgm_id = entry.bgm_id,
+          dandanplay_id = entry.dandanplay_id,
+          anime_id = folder.anime_id,
+          manual = folder.manual == true,
+        }
+      end
     end
   end
-  
+
+  for dir, folder in pairs(db) do
+    for filename, entry in pairs(folder.entries or {}) do
+      local match = true
+      if query.path and entry.path ~= query.path then
+        match = false
+      end
+      if query.bgm_id and entry.bgm_id ~= query.bgm_id then
+        match = false
+      end
+      if query.dandanplay_id and entry.dandanplay_id ~= query.dandanplay_id then
+        match = false
+      end
+      if match then
+        return {
+          path = entry.path or (dir .. "/" .. filename),
+          bgm_id = entry.bgm_id,
+          dandanplay_id = entry.dandanplay_id,
+          anime_id = folder.anime_id,
+          manual = folder.manual == true,
+        }
+      end
+    end
+  end
+
   return nil
 end
 
 -- 设置bgm_id
 function M.set_bgm_id(path, id_)
   local db = load_db()
-  if not db[path] then
-    db[path] = {}
+  local dir, filename = split_path(path)
+  if not dir or not filename then
+    return false
   end
-  db[path].path = path
-  db[path].bgm_id = id_
+  local folder = ensure_folder(db, dir)
+  local entry = ensure_entry(folder, filename, path)
+  if not entry then
+    return false
+  end
+  entry.bgm_id = id_
   save_db(db)
+  return true
 end
 
 -- 设置dandanplay_id
 function M.set_dandanplay_id(path, id_)
   local db = load_db()
-  if not db[path] then
-    db[path] = {}
+  local dir, filename = split_path(path)
+  if not dir or not filename then
+    return false
   end
-  db[path].path = path
-  db[path].dandanplay_id = id_
+  local folder = ensure_folder(db, dir)
+  local entry = ensure_entry(folder, filename, path)
+  if not entry then
+    return false
+  end
+  entry.dandanplay_id = id_
+  update_folder_anime_id(folder)
   save_db(db)
+  return true
 end
 
 -- 获取自动加载源
 function M.get_autoload_source(dir_, filename)
   local db = load_db()
-  local anime_ids = {}
-  
-  for path, record in pairs(db) do
-    if path:find(dir_, 1, true) and record.dandanplay_id then
-      local anime_id = math.floor(record.dandanplay_id / 10000)
-      anime_ids[anime_id] = true
-    end
+  local folder = db[normalize_path(dir_)]
+  local anime_id = folder and folder.anime_id or nil
+  if not anime_id and folder and folder.entries then
+    anime_id = derive_unique_anime_id(folder.entries)
   end
-  
-  local anime_id_list = {}
-  for id, _ in pairs(anime_ids) do
-    table.insert(anime_id_list, id)
-  end
-  
-  if #anime_id_list ~= 1 then
+  if not anime_id then
     return nil
   end
-  
-  local anime_id = anime_id_list[1]
+
   local info = utils.extract_info_from_filename(filename)
   if not info.episode then
     return nil
   end
   
   return anime_id * 10000 + info.episode
+end
+
+function M.get_folder_info(dir_path)
+  local db = load_db()
+  local folder = db[normalize_path(dir_path)]
+  if not folder then
+    return nil
+  end
+  return {
+    anime_id = folder.anime_id,
+    manual = folder.manual == true,
+    entries = folder.entries,
+  }
+end
+
+function M.set_manual_selection(path_or_dir, anime_id)
+  local db = load_db()
+  local dir, _ = split_path(path_or_dir)
+  if not dir then
+    dir = path_or_dir
+  end
+  local folder = ensure_folder(db, dir)
+  if not folder then
+    return false
+  end
+  folder.manual = true
+  if anime_id then
+    folder.anime_id = anime_id
+  end
+  save_db(db)
+  return true
 end
 
 -- 获取剧集信息
