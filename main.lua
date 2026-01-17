@@ -239,7 +239,8 @@ local function init_after_bangumi_id()
       return
     end
     local ratio = current_time / total_time
-    if ratio < 0.8 then
+    local threshold = Options.progress_mark_threshold or 0.9
+    if ratio < threshold then
       return
     end
     if not (BangumiCollectionReady and EpisodesReady) then
