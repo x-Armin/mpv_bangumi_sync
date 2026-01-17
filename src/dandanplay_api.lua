@@ -143,7 +143,6 @@ local SEED = 0xC0FFEE
 
 local function generate_signature(timestamp, path)
   local data = decode_hex(appid_enc, SEED) .. timestamp .. path .. decode_hex(secret_enc, SEED)
-  mp.msg.verbose("Signature raw data: " .. decode_hex(appid_enc, SEED) .. ";" .. decode_hex(secret_enc, SEED ))
   local hash_hex = sha256(data)
   return hex_to_base64(hash_hex)
 end
@@ -216,8 +215,7 @@ function M.get_anime_info(anime_id)
     mp.msg.error("Failed to get anime info: " .. (res.body and res.body.errorMessage or "unknown"))
     return nil
   end
-  
-  mp.msg.verbose("Got anime info: " .. tostring(res.body.bangumi and res.body.bangumi.animeTitle and res.status_code))
+
   return res.body.bangumi
 end
 

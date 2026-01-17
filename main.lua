@@ -11,7 +11,8 @@ CurrentEpisodeInfo = nil
 EpisodeStatusText = "未获取"
 EpisodeProgressText = "未获取"
 UpdateEpisodeTimer = nil
-BangumiSucessFlag = 0
+BangumiCollectionReady = false
+EpisodesReady = false
 MatchResults = nil
 UoscAvailable = false
 
@@ -109,7 +110,8 @@ local function reset_globals()
     UpdateEpisodeTimer:kill()
     UpdateEpisodeTimer = nil
   end
-  BangumiSucessFlag = 0
+  BangumiCollectionReady = false
+  EpisodesReady = false
   MatchResults = nil
 end
 
@@ -128,27 +130,30 @@ local function map_episode_status(status)
   return status_map[status] or "未知"
 end
 
-local function update_episode_status_from_cache()
+local function update_episode_status_from_cache(episodes_data)
   if not CurrentEpisodeInfo or not CurrentEpisodeInfo.episodeId then
-    return
+    return false
   end
 
-  local episodes_path = db.get_path(CurrentEpisodeInfo.episodeId, "episodes")
-  local info = mp_utils.file_info(episodes_path)
-  if not info or not info.is_file then
-    return
+  if not episodes_data then
+    local episodes_path = db.get_path(CurrentEpisodeInfo.episodeId, "episodes")
+    local info = mp_utils.file_info(episodes_path)
+    if not info or not info.is_file then
+      return false
+    end
+
+    local file = io.open(episodes_path, "r")
+    if not file then
+      return false
+    end
+
+    local content = file:read("*all")
+    file:close()
+    episodes_data = mp_utils.parse_json(content)
   end
 
-  local file = io.open(episodes_path, "r")
-  if not file then
-    return
-  end
-
-  local content = file:read("*all")
-  file:close()
-  local episodes_data = mp_utils.parse_json(content)
   if not episodes_data or not episodes_data.data then
-    return
+    return false
   end
 
   local episodes = episodes_data.data
@@ -188,6 +193,7 @@ local function update_episode_status_from_cache()
 
   local status = get_episode_status_value(target)
   EpisodeStatusText = map_episode_status(status)
+  return true
 end
 
 local function init_after_bangumi_id()
@@ -199,20 +205,10 @@ local function init_after_bangumi_id()
       else
         mp.msg.verbose "收藏状态未改变"
       end
-      BangumiSucessFlag = BangumiSucessFlag + 1
+      BangumiCollectionReady = true
     end,
     err = function(err)
       mp.msg.error("更新Bangumi条目失败:", err)
-    end,
-  }
-  bgm.fetch_episodes().async {
-    resp = function(_)
-      mp.msg.info("获取剧集信息成功!")
-      update_episode_status_from_cache()
-      BangumiSucessFlag = BangumiSucessFlag + 1
-    end,
-    err = function(err)
-      mp.msg.error("获取剧集信息失败:", err)
     end,
   }
   UpdateEpisodeTimer = mp.add_periodic_timer(5, function()
@@ -225,7 +221,7 @@ local function init_after_bangumi_id()
     if ratio < 0.8 then
       return
     end
-    if BangumiSucessFlag ~= 2 then
+    if not (BangumiCollectionReady and EpisodesReady) then
       mp.msg.verbose "Bangumi 收藏或剧集未更新或更新失败，跳过更新"
       return
     end
@@ -255,38 +251,45 @@ local function init_after_bangumi_id()
   end)
 end
 
-local function init(episode_id)
+local function init(episode_id, opts)
+  local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
   reset_globals()
-  bgm.match(episode_id).async {
-    resp = function(data)
-      -- 处理匹配结果（如果有多个匹配，让用户选择）
-      if data and data.matches and #data.matches > 1 then
+  local source = episode_id and "manual" or "auto"
+  bgm.sync_context({
+    episode_id = episode_id,
+    force_refresh = force_refresh,
+    source = source,
+  }).async {
+    resp = function(result)
+      if result and result.status == "select" and result.matches and #result.matches > 1 then
         mp.msg.info "匹配结果不唯一，请手动选择"
         mp.osd_message("匹配结果不唯一，请手动选择", 3)
-        MatchResults = data.matches
+        MatchResults = result.matches
         return
       end
 
-      if data and data.info then
-        CurrentEpisodeInfo = data.info
+      if not result or result.status ~= "ok" or not result.context then
+        mp.msg.error "获取番剧元信息失败"
+        return
       end
 
-      bgm.update_metadata().async {
-        resp = function(anime_info)
-          if not anime_info or not anime_info.bgm_id then
-            mp.msg.error "获取番剧元信息失败"
-            return
-          end
-          AnimeInfo = anime_info
-          mp.msg.verbose(
-            "Bangumi ID:",
-            anime_info.bgm_id,
-            "Bangumi Url:",
-            anime_info.bgm_url
-          )
-          init_after_bangumi_id()
-        end,
-      }
+      CurrentEpisodeInfo = result.context.episode_info
+      local anime_info = result.context.anime_info or {}
+      anime_info.bgm_id = result.context.bgm_id
+      anime_info.bgm_url = result.context.bgm_url
+      AnimeInfo = anime_info
+      EpisodesReady = update_episode_status_from_cache(result.context.episodes)
+
+      mp.msg.verbose(
+        "Bangumi ID:",
+        AnimeInfo.bgm_id,
+        "Bangumi Url:",
+        AnimeInfo.bgm_url
+      )
+      init_after_bangumi_id()
+    end,
+    err = function(err)
+      mp.msg.error("获取番剧元信息失败", err)
     end,
   }
 end
@@ -341,18 +344,29 @@ mp.register_script_message("open-bangumi-info", function()
     status_muted = true
   end
   local items = {
-    { title = episode_title,
+    { 
+      title = episode_title,
+      hint  = "播放中",
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
-      selectable = true, keep_open = true },
-    { title = "进度：" .. EpisodeProgressText, value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
-      selectable = true, keep_open = true },
-    { title = status_title, italic = status_italic, muted = status_muted,
+      keep_open = true },
+    { 
+      title = "进度：" .. EpisodeProgressText,
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
-      selectable = true, keep_open = true },
-    { title = "手动匹配", value = { "script-message-to", mp.get_script_name(), "bgm-open-search-from-info" },
-      selectable = true, keep_open = false },
-    { title = "打开Bangumi", value = { "script-message", "open-bangumi-url" },
-      selectable = true, keep_open = true },
+      keep_open = true },
+    { 
+      title = status_title,
+      italic = status_italic, muted = status_muted,
+      value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
+      keep_open = true},
+    {
+      title = "手动匹配",
+      value = { "script-message-to", mp.get_script_name(), "bgm-open-search-from-info" },
+      selectable = true,
+      keep_open = false },
+    {
+      title = "打开Bangumi", 
+      value = { "script-message", "open-bangumi-url" },
+      selectable = true},
   }
   open_uosc_menu({
     type = "menu_bgm_info",
@@ -500,7 +514,7 @@ mp.register_script_message("bgm-select-episode", function(episode_id)
     return
   end
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_episodes")
-  init(episode_id)
+  init(episode_id, { force_refresh = true })
 end)
 
 mp.register_script_message("bgm-select-match", function(episode_id)
@@ -509,7 +523,7 @@ mp.register_script_message("bgm-select-match", function(episode_id)
     return
   end
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_match")
-  init(episode_id)
+  init(episode_id, { force_refresh = true })
 end)
 
 mp.register_script_message("manual-match", function()
@@ -551,7 +565,7 @@ mp.register_script_message("manual-match", function()
               selected_episode.id,
               selected_episode.title
             )
-            init(selected_episode.id)
+            init(selected_episode.id, { force_refresh = true })
           end,
         }
       end,
@@ -639,7 +653,7 @@ mp.register_script_message("manual-match", function()
         selected_match.animeTitle,
         selected_match.episodeTitle
       )
-      init(selected_match.episodeId)
+      init(selected_match.episodeId, { force_refresh = true })
     end,
     closed = function()
       mp.set_property("pause", "no")
