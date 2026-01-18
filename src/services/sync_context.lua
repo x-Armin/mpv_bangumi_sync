@@ -6,6 +6,8 @@ local bangumi_api = require "src.bangumi_api"
 local dandanplay_api = require "src.dandanplay_api"
 local video_info = require "src.video_info"
 local config = require "src.config"
+local json_store = require "src.core.json_store"
+local storage_gate = require "src.core.storage_gate"
 
 local M = {}
 
@@ -87,6 +89,22 @@ local function read_cached_json(path, max_age, validate)
     return nil
   end
   return data
+end
+
+read_json_file = function(path)
+  return json_store.read(path)
+end
+
+write_json_file = function(path, data)
+  return json_store.write(path, data, {atomic = true})
+end
+
+is_cache_fresh = function(path, max_age)
+  return json_store.is_fresh(path, max_age)
+end
+
+read_cached_json = function(path, max_age, validate)
+  return json_store.read(path, {max_age = max_age, validate = validate})
 end
 
 local function build_episode_info_from_anime(anime_info, episode_id)
@@ -203,6 +221,10 @@ local function is_in_storage_path(file_path)
     end
   end
   return false
+end
+
+is_in_storage_path = function(file_path)
+  return storage_gate.is_in_storage_path(file_path)
 end
 
 -- 构造episode match
@@ -509,326 +531,9 @@ end
 
 
 -- 打开URL
-function M.open_url(url)
-  local platform = mp.get_property_native("platform")
-  local cmd
-  if platform == "windows" then
-    cmd = {"cmd", "/c", "start", "", url}
-  elseif platform == "darwin" then
-    cmd = {"open", url}
-  else
-    cmd = {"xdg-open", url}
-  end
-  
-  return utils.subprocess_wrapper(cmd)
-end
 
--- 更新Bangumi收藏
-function M.update_bangumi_collection()
-  if not AnimeInfo or not AnimeInfo.bgm_id then
-    mp.msg.error("未匹配到Bangumi ID，更新条目失败")
-    return utils.subprocess_err()
-  end
-  
-  local subject_id = AnimeInfo.bgm_id
-  local res = bangumi_api.get_user_collection(subject_id)
-  
-  if not res or not res.body then
-    mp.msg.error("获取用户收藏失败")
-    return utils.subprocess_err()
-  end
-  
-  local status = res.body.type
-  local update_message = nil
-  mp.msg.error("获取用户收藏状态:" .. res.status_code)
-  if not status then
-    -- 404，未收藏
-    if res.status_code == 404 then
-      bangumi_api.update_user_collection(subject_id, 3)
-      update_message = "条目状态更新：未看 -> 在看"
-    end
-  else
-    -- 已收藏，检查状态
-    local status_map = {"想看", nil, nil, "搁置", "抛弃"}
-    local update_from = status_map[status]
-    if update_from then
-      bangumi_api.update_user_collection(subject_id, 3)
-      update_message = "条目状态更新：" .. update_from .. " -> 在看"
-    end
-  end
-  
-  return {
-    execute = function()
-      return {update_message = update_message}
-    end,
-    async = function(cb)
-      if cb and cb.resp then
-        cb.resp({update_message = update_message})
-      end
-    end,
-  }
-end
-
--- 获取剧集列表
-function M.fetch_episodes(opts)
-  local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
-  if not AnimeInfo or not AnimeInfo.bgm_id then
-    mp.msg.error("未匹配到Bangumi ID，更新剧集失败")
-    return utils.subprocess_err()
-  end
-  local file_path = get_current_file_path()
-  local db_record = file_path and db.get({path = file_path}) or nil
-
-  if not db_record or not db_record.bgm_id or not db_record.dandanplay_id then
-    mp.msg.error("无法获取Bangumi ID和Dandanplay ID")
-    return utils.subprocess_err()
-  end
-
-  local episodes = get_user_episodes_cached(
-    db_record.dandanplay_id,
-    db_record.bgm_id,
-    {force_refresh = force_refresh}
-  )
-  if not episodes then
-    mp.msg.error("获取剧集列表失败")
-    return utils.subprocess_err()
-  end
-
-  local changed = mark_episode_watched(episode)
-  persist_episodes_if_needed(changed)
-
-  return {
-    execute = function()
-      return {success = true}
-    end,
-    async = function(cb)
-      if cb and cb.resp then
-        cb.resp({success = true})
-      end
-    end,
-  }
-end
-
--- 更新剧集状态
-function M.update_episode()
-  if not AnimeInfo or not AnimeInfo.bgm_id then
-    mp.msg.error("未匹配到Bangumi ID，更新剧集失败")
-    return utils.subprocess_err()
-  end
-  
-  local file_path = mp.get_property("path")
-  file_path = mp.command_native({"normalize-path", file_path})
-  local db_record = db.get({path = file_path})
-  
-  if not db_record or not db_record.bgm_id or not db_record.dandanplay_id then
-    mp.msg.error("无法获取Bangumi ID和Dandanplay ID")
-    return utils.subprocess_err()
-  end
-  
-  local episode_id = db_record.dandanplay_id
-  local ep = episode_id % 10000
-  
-  local episodes_path = db.get_path(episode_id, "episodes")
-  local file = io.open(episodes_path, "r")
-  if not file then
-    mp.msg.error("剧集文件不存在: " .. episodes_path)
-    return utils.subprocess_err()
-  end
-  
-  local content = file:read("*all")
-  file:close()
-  local episodes_data = mp_utils.parse_json(content)
-  
-  if not episodes_data or not episodes_data.data then
-    mp.msg.error("无法解析剧集文件")
-    return utils.subprocess_err()
-  end
-  
-  local episodes = episodes_data.data
-  local bgm_episode_id = nil
-  local episode = nil
-  local function mark_episode_watched(ep_info)
-    if not ep_info then
-      return false
-    end
-    local changed = false
-    if ep_info.type ~= 2 then
-      ep_info.type = 2
-      changed = true
-    end
-    if ep_info.status ~= nil and ep_info.status ~= 2 then
-      ep_info.status = 2
-      changed = true
-    end
-    if ep_info.episode and ep_info.episode.status ~= nil and ep_info.episode.status ~= 2 then
-      ep_info.episode.status = 2
-      changed = true
-    end
-    return changed
-  end
-  local function persist_episodes_if_needed(changed)
-    if not changed then
-      return
-    end
-    local out = io.open(episodes_path, "w")
-    if out then
-      out:write(mp_utils.format_json(episodes_data) or "{}")
-      out:close()
-    end
-  end
-  
-  if ep > 1000 then
-    -- 特殊集，通过标题匹配
-    local episode_info = construct_episode_match(episode_id)
-    if not episode_info then
-      mp.msg.error("无法匹配剧集信息")
-      return utils.subprocess_err()
-    end
-    
-    local title = episode_info.episodeTitle
-    local max_conf = 0
-    local max_idx = 1
-    
-    for i, ep_info in ipairs(episodes) do
-      local conf1 = utils.fuzzy_match_title(title, ep_info.episode.name or "")
-      local conf2 = utils.fuzzy_match_title(title, ep_info.episode.name_cn or "")
-      local conf = math.max(conf1, conf2)
-      if conf > max_conf then
-        max_conf = conf
-        max_idx = i
-      end
-    end
-    
-    if max_conf < 0.8 then
-      mp.msg.error("无法匹配剧集标题，相似度: " .. max_conf)
-      return utils.subprocess_err()
-    end
-    
-    episode = episodes[max_idx]
-    bgm_episode_id = episode.episode.id
-  else
-    -- 普通集，通过集数匹配
-    for _, ep_info in ipairs(episodes) do
-      if ep_info.episode.ep == ep then
-        episode = ep_info
-        bgm_episode_id = episode.episode.id
-        break
-      end
-    end
-  end
-  
-  if not bgm_episode_id then
-    mp.msg.error("无法找到对应的剧集")
-    return utils.subprocess_err()
-  end
-  
-  -- 检查是否已标记为看过
-  local prev_status = bangumi_api.get_episode_status(bgm_episode_id)
-  if prev_status and prev_status.body and prev_status.body.type == 2 then
-    local changed = mark_episode_watched(episode)
-    persist_episodes_if_needed(changed)
-    return {
-      execute = function()
-        return {progress = ep, total = #episodes, skipped = true, episodes_data = episodes_data}
-      end,
-      async = function(cb)
-        if cb and cb.resp then
-          cb.resp({progress = ep, total = #episodes, skipped = true, episodes_data = episodes_data})
-        end
-      end,
-    }
-  end
-  
-  -- 更新剧集状态
-  local res = bangumi_api.update_episode_status(bgm_episode_id, 2)
-  if not res or res.status_code >= 400 then
-    mp.msg.error("更新剧集状态失败")
-    return utils.subprocess_err()
-  end
-  -- 本地标记为已看并持久化（补偿性更新），使返回的 episodes_data 包含最新状态
-  local changed = mark_episode_watched(episode)
-  persist_episodes_if_needed(changed)
-
-  return {
-    execute = function()
-      return {progress = ep, total = #episodes, episodes_data = episodes_data}
-    end,
-    async = function(cb)
-      if cb and cb.resp then
-        cb.resp({progress = ep, total = #episodes, episodes_data = episodes_data})
-      end
-    end,
-  }
-end
-
--- 搜索番剧
-function M.dandanplay_search(keyword)
-  return {
-    execute = function()
-      local results = dandanplay_api.search_anime(keyword)
-      local formatted = {}
-      for _, result in ipairs(results) do
-        table.insert(formatted, {
-          id = result.animeId,
-          title = result.animeTitle,
-          type = result.type,
-        })
-      end
-      return formatted
-    end,
-    async = function(cb)
-      if cb and cb.resp then
-        local results = dandanplay_api.search_anime(keyword)
-        local formatted = {}
-        for _, result in ipairs(results) do
-          table.insert(formatted, {
-            id = result.animeId,
-            title = result.animeTitle,
-            type = result.type,
-          })
-        end
-        cb.resp(formatted)
-      end
-    end,
-  }
-end
-
--- 获取剧集列表
-function M.get_dandanplay_episodes(anime_id)
-  local anchor_id = anime_id * 10000 + 1
-  local anime_info = get_anime_info_cached(anchor_id, anime_id, {force_refresh = false})
-  
-  if not anime_info or not anime_info.episodes then
-    return {
-      execute = function()
-        return {}
-      end,
-      async = function(cb)
-        if cb and cb.resp then
-          cb.resp({})
-        end
-      end,
-    }
-  end
-  
-  local episodes = {}
-  for _, episode in ipairs(anime_info.episodes) do
-    table.insert(episodes, {
-      id = episode.episodeId,
-      title = episode.episodeTitle,
-    })
-  end
-  
-  return {
-    execute = function()
-      return episodes
-    end,
-    async = function(cb)
-      if cb and cb.resp then
-        cb.resp(episodes)
-      end
-    end,
-  }
-end
+M.construct_episode_match = construct_episode_match
+M.get_anime_info_cached = get_anime_info_cached
+M.get_user_episodes_cached = get_user_episodes_cached
 
 return M
