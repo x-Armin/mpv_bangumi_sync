@@ -327,23 +327,6 @@ function M.set_episode_info(episode_id, data)
   return true
 end
 
--- 检查文件是否过期
-function M.is_outdated(file_path, max_age)
-  max_age = max_age or (3600 * 4) -- 默认4小时
-  
-  local info = mp_utils.file_info(file_path)
-  if not info or not info.is_file then
-    return true
-  end
-  
-  local current_time = os.time()
-  local file_time = info.mtime
-  if current_time - file_time > max_age then
-    return true
-  end
-  
-  return false
-end
 
 -- 获取路径
 function M.get_path(episode_id, type_)
@@ -367,43 +350,6 @@ function M.get_path(episode_id, type_)
   end
 end
 
--- 获取或更新
-function M.get_or_update(episode_id, type_, update_cb, max_age)
-  max_age = max_age or (3600 * 4)
-  
-  local path = M.get_path(episode_id, type_)
-  
-  if not M.is_outdated(path, max_age) then
-    local file = io.open(path, "r")
-    if file then
-      local content = file:read("*all")
-      file:close()
-      return mp_utils.parse_json(content)
-    end
-  end
-  
-  local data = update_cb()
-  
-  local dir_path = path:match("^(.+)/[^/]+$")
-  if dir_path then
-    local info = mp_utils.file_info(dir_path)
-    if not info or not info.is_dir then
-      os.execute('mkdir "' .. dir_path .. '"')
-    end
-  end
-  
-  local file = io.open(path, "w")
-  if file then
-    local json = mp_utils.format_json(data)
-    if not json then
-      json = "{}"
-    end
-    file:write(json)
-    file:close()
-  end
-  
-  return data
-end
 
 local function remove_metadata_dirs(anime_id)
   if type(anime_id) ~= "number" then

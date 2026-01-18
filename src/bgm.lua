@@ -507,42 +507,6 @@ function M.match(force_id)
   }
 end
 
--- 更新元数据
-function M.update_metadata(opts)
-  local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
-  local source = type(opts) == "table" and opts.source or nil
-  local result = sync_context_execute({
-    force_refresh = force_refresh,
-    ensure_episodes = false,
-    source = source,
-  })
-  if not result or result.status ~= "ok" or not result.context then
-    return utils.subprocess_err()
-  end
-
-  local bgm_id = result.context.bgm_id
-  local bgm_url = result.context.bgm_url
-  if not bgm_id or not bgm_url then
-    return utils.subprocess_err()
-  end
-
-  return {
-    execute = function()
-      return {
-        bgm_id = bgm_id,
-        bgm_url = bgm_url,
-      }
-    end,
-    async = function(cb)
-      if cb and cb.resp then
-        cb.resp({
-          bgm_id = bgm_id,
-          bgm_url = bgm_url,
-        })
-      end
-    end,
-  }
-end
 
 -- 打开URL
 function M.open_url(url)
@@ -781,7 +745,10 @@ function M.update_episode()
     mp.msg.error("更新剧集状态失败")
     return utils.subprocess_err()
   end
-  
+  -- 本地标记为已看并持久化（补偿性更新），使返回的 episodes_data 包含最新状态
+  local changed = mark_episode_watched(episode)
+  persist_episodes_if_needed(changed)
+
   return {
     execute = function()
       return {progress = ep, total = #episodes, episodes_data = episodes_data}
