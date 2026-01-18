@@ -3,6 +3,7 @@ local bgm = require "src.bgm"
 local mp_utils = require "mp.utils"
 local db = require "src.db"
 local utils = require "src.utils"
+local title_guess = require "src.title_guess"
 local input = require "mp.input"
 
 -- global variables
@@ -48,27 +49,6 @@ end
 local function update_uosc_menu(props)
   local json_props = utils.format_json(props)
   mp.commandv("script-message-to", "uosc", "update-menu", json_props)
-end
-
-local function get_default_search_query()
-  local path = mp.get_property("path")
-  if not path then
-    mp.msg.info("default-search: missing path")
-    return nil
-  end
-  local filename = path:match("([^/\\]+)$") or path
-  mp.msg.info("default-search: raw filename=" .. tostring(filename))
-  filename = filename:match("^(.+)%.[^%.]+$") or filename
-  mp.msg.info("default-search: no-ext filename=" .. tostring(filename))
-  local cleaned = filename
-  cleaned = cleaned:gsub("%b[]", "")
-  cleaned = cleaned:gsub("%b()", "")
-  cleaned = cleaned:gsub("[Ss]%d+[Ee]%d+", "")
-  cleaned = cleaned:gsub("[Ee]%d+", "")
-  cleaned = cleaned:gsub("_", " ")
-  cleaned = cleaned:gsub("%s+", " "):gsub("^%s*(.-)%s*$", "%1")
-  mp.msg.info("default-search: parsed title=" .. tostring(cleaned))
-  return cleaned ~= "" and cleaned or filename
 end
 
 local function open_anime_search_menu(query)
@@ -358,7 +338,7 @@ mp.register_script_message("open-bangumi-info", function()
     mp.osd_message("未安装uosc，无法显示番剧信息窗口", 3)
     return
   end
-  local title = (CurrentEpisodeInfo and CurrentEpisodeInfo.animeTitle) or get_default_search_query() or "未获取"
+  local title = (CurrentEpisodeInfo and CurrentEpisodeInfo.animeTitle) or title_guess.get_default_search_query() or "未获取"
   local episode_title = (CurrentEpisodeInfo and CurrentEpisodeInfo.episodeTitle) or "未获取"
   local episode_ep = CurrentEpisodeInfo and CurrentEpisodeInfo.episodeEp
   if type(episode_ep) == "number" and episode_ep > 0 then
@@ -416,7 +396,7 @@ end)
 mp.register_script_message("bgm-open-search", function()
   MatchResults = nil
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_match")
-  open_anime_search_menu(get_default_search_query())
+  open_anime_search_menu(title_guess.get_default_search_query())
 end)
 
 mp.register_script_message("bgm-search-anime", function(query)
@@ -562,7 +542,7 @@ mp.register_script_message("manual-match", function()
       open_match_menu()
       return
     end
-    open_anime_search_menu(get_default_search_query())
+    open_anime_search_menu(title_guess.get_default_search_query())
     return
   end
   local select_episode = function(anime_id)
