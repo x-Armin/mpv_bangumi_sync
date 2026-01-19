@@ -1,17 +1,19 @@
 # mpv_bangumi_sync
 
-使用 mpv 播放动画时，自动同步 Bangumi 追番进度。
+使用 mpv 播放动画时，自动同步 Bangumi 追番进度，并支持显示番剧信息。
 
 ## 功能
 - 自动识别番剧并匹配Bangumi条目
-- 播放视频后，如果这个番剧在Bangumi没有收藏，自动标为在看
-- 观看进度达到配置阈值（默认0.9）时自动将Bangumi这一集标为看过
+- 播放视频后，如果这个番剧在Bangumi没有收藏，自动标为在看，并在左上角弹出提示
+- 观看进度达到配置阈值（默认0.9）时自动将Bangumi这一集标为看过，并在左上角弹出提示
 - 默认绑定"Alt+o"打开番剧信息表，界面如下
 ![番剧信息](doc/anime-info.png)
+![番剧信息](doc/anime-info2.png)
 
 ## 依赖
 - **curl**（HTTP 请求）
 - **ffprobe**（视频信息提取）
+（一般电脑都装了，不用管）
 
 ## 安装
 把仓库克隆或下载 zip 解压到mpv的插件目录，mpv-lazy如下：
@@ -39,9 +41,14 @@ progress_mark_threshold=0.9
 
 ```
 
+如果要添加uosc按钮，可以在uosc.conf中的"controls="字段添加
+`command:info:script-message open-bangumi-info?番剧信息`
+放在喜欢的位置即可
+
 ## 使用
 - 播放视频后会自动匹配并在进度达到配置阈值（默认0.9）时标记为“已看”
 - `Alt+o` 打开当前番剧的信息窗口
+
 
 ## 数据目录
 - `portable_config/mpv_bangumi_sync_data/`
@@ -59,6 +66,8 @@ progress_mark_threshold=0.9
 
 ⬜️ 适配补番逻辑，避免短时间每集都标记一次导致刷屏 Bangumi 时间线
 
+⬜️ 从api获取信息的流程改为异步，这样不阻塞打开信息窗口。（mpv lua似乎没有线程的概念，方案还需再想想，改动会比较大）
+
 
 
 ## 感谢
@@ -67,4 +76,4 @@ progress_mark_threshold=0.9
 
 番剧信息窗口依赖于[uosc UI框架](https://github.com/tomasklaen/uosc)。要使用该功能请为mpv播放器安装uosc。uosc的安装步骤可以参考其[官方安装教程](https://github.com/tomasklaen/uosc?tab=readme-ov-file#install)。如果使用[MPV_lazy](https://github.com/hooke007/MPV_lazy)等内置了uosc的懒人包则只需安装本插件即可。
 
-PS：⚠️⚠️之前没用过lua，所以基本是AI写，我负责review，使用上有bug可以提issue，有时间会尽力解决
+PS：⚠️⚠️之前没用过lua，所以大部分代码是AI写，我负责review和debug，使用上有bug可以提issue，有时间就会尽力解决

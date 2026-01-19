@@ -4,8 +4,15 @@ local json_store = require "src.core.json_store"
 
 local M = {}
 
-local function get_episode_status_value(ep_info)
-  return ep_info and (ep_info.type or ep_info.status or (ep_info.episode and ep_info.episode.status)) or nil
+function M.map_status(status)
+  local status_map = {
+    [0] = "未看",
+    [1] = "想看",
+    [2] = "已看",
+    [3] = "搁置",
+    [4] = "抛弃",
+  }
+  return status_map[status] or "未知"
 end
 
 function M.compute(current_episode_info, episodes_data)
@@ -29,8 +36,7 @@ function M.compute(current_episode_info, episodes_data)
   local watched = 0
 
   for _, ep_info in ipairs(episodes) do
-    local status_value = get_episode_status_value(ep_info)
-    if status_value == 2 then
+    if ep_info.type == 2 then
       watched = watched + 1
     end
   end
@@ -56,7 +62,7 @@ function M.compute(current_episode_info, episodes_data)
     end
   end
 
-  local status = get_episode_status_value(target)
+  local status = target and target.type or nil
   local updated_info = current_episode_info
 
   if target and target.episode then

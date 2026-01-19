@@ -160,14 +160,6 @@ function M.update_episode(anime_info)
       ep_info.type = 2
       changed = true
     end
-    if ep_info.status ~= nil and ep_info.status ~= 2 then
-      ep_info.status = 2
-      changed = true
-    end
-    if ep_info.episode and ep_info.episode.status ~= nil and ep_info.episode.status ~= 2 then
-      ep_info.episode.status = 2
-      changed = true
-    end
     return changed
   end
   local function persist_episodes_if_needed(changed)

@@ -47,21 +47,6 @@ local function reset_globals()
   MatchResults = nil
 end
 
-local function get_episode_status_value(ep_info)
-  return ep_info and (ep_info.type or ep_info.status or (ep_info.episode and ep_info.episode.status)) or nil
-end
-
-local function map_episode_status(status)
-  local status_map = {
-    [0] = "未看",
-    [1] = "想看",
-    [2] = "已看",
-    [3] = "搁置",
-    [4] = "抛弃",
-  }
-  return status_map[status] or "未知"
-end
-
 local function update_episode_status_from_cache(episodes_data)
   local result = episode_status.compute(CurrentEpisodeInfo, episodes_data)
   if not result then
@@ -70,7 +55,7 @@ local function update_episode_status_from_cache(episodes_data)
 
   local progress = result.progress or {}
   EpisodeProgressText = string.format("%d / %d", progress.watched or 0, progress.total or 0)
-  EpisodeStatusText = map_episode_status(result.status_value)
+  EpisodeStatusText = episode_status.map_status(result.status_value)
   if result.episode_info then
     CurrentEpisodeInfo = result.episode_info
   end
