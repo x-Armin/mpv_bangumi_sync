@@ -140,7 +140,7 @@ local function get_anime_info_cached(episode_id, anime_id, opts)
     if cached then
       mp.msg.verbose(
         string.format(
-          "sync_context: anime_info cache hit episode_id=%s anime_id=%s path=%s",
+          "sync_context: anime_info 缓存命中 episode_id=%s anime_id=%s path=%s",
           tostring(episode_id),
           tostring(anime_id),
           info_path
@@ -152,7 +152,7 @@ local function get_anime_info_cached(episode_id, anime_id, opts)
 
   mp.msg.verbose(
     string.format(
-      "sync_context: anime_info cache miss episode_id=%s anime_id=%s refresh=%s",
+      "sync_context: anime_info 缓存未命中 episode_id=%s anime_id=%s refresh=%s",
       tostring(episode_id),
       tostring(anime_id),
       tostring(force_refresh == true)
@@ -186,7 +186,7 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
     if cached then
       mp.msg.verbose(
         string.format(
-          "sync_context: episodes cache hit episode_id=%s bgm_id=%s path=%s",
+          "sync_context: episodes 缓存命中 episode_id=%s bgm_id=%s path=%s",
           tostring(episode_id),
           tostring(bgm_id),
           episodes_path
@@ -198,7 +198,7 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
 
   mp.msg.verbose(
     string.format(
-      "sync_context: episodes cache miss episode_id=%s bgm_id=%s refresh=%s",
+      "sync_context: episodes 缓存未命中 episode_id=%s bgm_id=%s refresh=%s",
       tostring(episode_id),
       tostring(bgm_id),
       tostring(force_refresh == true)
@@ -281,7 +281,7 @@ local function sync_context_execute(opts)
 
   mp.msg.verbose(
     string.format(
-      "sync_context: start source=%s force_refresh=%s ensure_episodes=%s force_episode_id=%s",
+      "sync_context: 开始 source=%s force_refresh=%s ensure_episodes=%s force_episode_id=%s",
       tostring(source),
       tostring(force_refresh == true),
       tostring(ensure_episodes),
@@ -291,20 +291,18 @@ local function sync_context_execute(opts)
   local file_path = get_current_file_path()
   local file_info = file_path and mp_utils.file_info(file_path) or nil
   if not file_info or not file_info.is_file then
-    mp.msg.verbose("sync_context: file_path invalid or not a file")
-    mp.msg.error("Invalid video path: " .. tostring(file_path))
-    return {status = "error", error = "VideoPathError", video = file_path}
+    mp.msg.verbose("sync_context: 文件路径无效或不是文件")
+    mp.msg.error("视频路径无效或不是文件")
+    return {status = "error", error = "VideoPathError", reason = "InvalidPath"}
   end
 
-  mp.msg.verbose("sync_context: file_path=" .. tostring(file_path))
+  mp.msg.verbose("sync_context: 已获取文件路径")
   if not is_in_storage_path(file_path) then
-    mp.msg.verbose("sync_context: file_path not in configured storages")
-    mp.msg.verbose("Video not in storage path: " .. file_path)
+    mp.msg.info("sync_context: 文件不在配置的存储路径内")
     return {
       status = "error",
       error = "VideoPathError",
-      video = file_path,
-      storage = config.config.storages or {},
+      reason = "NotInStorage",
     }
   end
 
@@ -314,14 +312,14 @@ local function sync_context_execute(opts)
   local anime_info = nil
   mp.msg.verbose(
     string.format(
-      "sync_context: db_record dandanplay_id=%s bgm_id=%s",
+      "sync_context: db 记录 dandanplay_id=%s bgm_id=%s",
       tostring(db_record and db_record.dandanplay_id),
       tostring(db_record and db_record.bgm_id)
     )
   )
 
   if force_episode_id then
-    mp.msg.verbose("sync_context: force_episode_id=" .. tostring(force_episode_id))
+    mp.msg.verbose("sync_context: 强制 episode_id=" .. tostring(force_episode_id))
     db.set_dandanplay_id(file_path, force_episode_id)
   end
 
@@ -330,22 +328,22 @@ local function sync_context_execute(opts)
     local filename = file_path:match("([^/\\]+)$") or file_path
     local autoload_id = db.get_autoload_source(dir_path, filename)
     if autoload_id then
-      mp.msg.verbose("sync_context: autoload_id=" .. tostring(autoload_id))
+      mp.msg.verbose("sync_context: 自动加载 episode_id=" .. tostring(autoload_id))
       episode_id = autoload_id
     end
   end
 
   if episode_id then
-    mp.msg.verbose("sync_context: episode_id=" .. tostring(episode_id))
+    mp.msg.verbose("sync_context: 当前 episode_id=" .. tostring(episode_id))
     episode_info = db.get_episode_info(episode_id)
     if episode_info then
-      mp.msg.verbose("sync_context: episode_info cache hit")
+      mp.msg.verbose("sync_context: episode_info 缓存命中")
     end
   end
 
   if not episode_id then
     local matches = get_match_info(file_path)
-    mp.msg.verbose("sync_context: match candidates=" .. tostring(#matches))
+    mp.msg.verbose("sync_context: 匹配候选数=" .. tostring(#matches))
     if #matches > 1 then
       local dir_path = file_path:match("^(.+)/[^/]+$") or file_path:match("^(.+)\\[^\\]+$") or ""
       local folder_info = dir_path ~= "" and db.get_folder_info(dir_path) or nil
@@ -354,7 +352,7 @@ local function sync_context_execute(opts)
           local match_anime_id = math.floor(match.episodeId / 10000)
           if match_anime_id == folder_info.anime_id then
             mp.msg.verbose(
-              "sync_context: auto-pick match by manual anime_id=" .. tostring(folder_info.anime_id)
+              "sync_context: 通过手动 anime_id 自动选择匹配=" .. tostring(folder_info.anime_id)
             )
             episode_info = match
             episode_id = match.episodeId
@@ -364,14 +362,14 @@ local function sync_context_execute(opts)
           end
         end
         if not episode_id then
-          mp.msg.verbose("sync_context: manual anime_id not found in candidates")
+          mp.msg.verbose("sync_context: 候选中未找到手动 anime_id")
         end
       end
 
       if not episode_id then
         local filename = file_path:match("([^/\\]+)$") or file_path
         local info = utils.extract_info_from_filename(filename)
-        mp.msg.verbose("sync_context: match requires selection")
+        mp.msg.verbose("sync_context: 匹配结果需要手动选择")
         return {
           status = "select",
           info = info,
@@ -383,7 +381,7 @@ local function sync_context_execute(opts)
     if not episode_id then
       episode_info = matches[1]
       if episode_info then
-        mp.msg.verbose("sync_context: match picked episode_id=" .. tostring(episode_info.episodeId))
+        mp.msg.verbose("sync_context: 选中匹配 episode_id=" .. tostring(episode_info.episodeId))
         episode_id = episode_info.episodeId
         db.set_dandanplay_id(file_path, episode_id)
         db.set_episode_info(episode_id, episode_info)
@@ -393,14 +391,14 @@ local function sync_context_execute(opts)
 
   if not episode_id then
     mp.msg.error("Match failed: " .. file_path)
-    mp.msg.verbose("sync_context: no episode_id after match attempts")
+    mp.msg.verbose("sync_context: 匹配后仍未获得 episode_id")
     return {status = "error", error = "MatchNotFound", video = file_path}
   end
 
   if source == "manual" then
     local anime_id = math.floor(episode_id / 10000)
     db.set_manual_selection(file_path, anime_id)
-    mp.msg.verbose("sync_context: stored manual anime_id=" .. tostring(anime_id))
+    mp.msg.verbose("sync_context: 已保存手动 anime_id=" .. tostring(anime_id))
   end
 
   if not episode_info then
@@ -408,14 +406,14 @@ local function sync_context_execute(opts)
     anime_info = get_anime_info_cached(episode_id, anime_id, {force_refresh = refresh})
     episode_info = build_episode_info_from_anime(anime_info, episode_id)
     if episode_info then
-      mp.msg.verbose("sync_context: episode_info built from anime_info")
+      mp.msg.verbose("sync_context: 已从 anime_info 构建 episode_info")
       db.set_episode_info(episode_id, episode_info)
     end
   end
 
   if not episode_info then
     mp.msg.error("Episode info not available: " .. tostring(episode_id))
-    mp.msg.verbose("sync_context: episode_info missing after anime_info lookup")
+    mp.msg.verbose("sync_context: 查询 anime_info 后仍缺少 episode_info")
     return {status = "error", error = "EpisodeInfoError", episode_id = episode_id}
   end
 
@@ -428,12 +426,12 @@ local function sync_context_execute(opts)
 
   if not anime_info or not anime_info.bangumiUrl then
     mp.msg.error("Anime info not available: " .. tostring(episode_id))
-    mp.msg.verbose("sync_context: anime_info missing or no bangumiUrl")
+    mp.msg.verbose("sync_context: anime_info 缺失或无 bangumiUrl")
     return {status = "error", error = "AnimeInfoError", episode_id = episode_id}
   end
 
   local bgm_id = tonumber(anime_info.bangumiUrl:match("/(%d+)$"))
-  mp.msg.verbose("sync_context: bgm_id=" .. tostring(bgm_id))
+  mp.msg.verbose("sync_context: 解析 bgm_id=" .. tostring(bgm_id))
   if bgm_id then
     db.set_bgm_id(file_path, bgm_id)
   end
@@ -441,7 +439,7 @@ local function sync_context_execute(opts)
   local episodes = nil
   if ensure_episodes then
     episodes = get_user_episodes_cached(episode_id, bgm_id, {force_refresh = refresh})
-    mp.msg.verbose("sync_context: episodes loaded=" .. tostring(episodes ~= nil))
+    mp.msg.verbose("sync_context: episodes 已加载=" .. tostring(episodes ~= nil))
   end
 
   return {

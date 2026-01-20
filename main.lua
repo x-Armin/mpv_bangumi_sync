@@ -160,7 +160,17 @@ local function init(episode_id, opts)
       init_after_bangumi_id()
     end,
     err = function(err)
-      mp.msg.error("获取番剧元信息失败", err)
+      if err and err.error == "VideoPathError" then
+    if err.reason == "NotInStorage" then
+      mp.msg.verbose("视频不在配置的存储路径内，跳过初始化")
+      return
+        end
+        if err.reason == "InvalidPath" then
+          mp.msg.error("视频路径无效")
+          return
+        end
+      end
+      mp.msg.error("获取番剧元信息失败")
     end,
   }
 end
