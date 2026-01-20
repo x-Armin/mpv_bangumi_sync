@@ -1,5 +1,7 @@
 require "src.config"
-local bgm = require "src.facade.bgm"
+local sync_context = require "src.services.sync_context"
+local bangumi_service = require "src.services.bangumi_service"
+local dandanplay_service = require "src.services.dandanplay_service"
 local db = require "src.db"
 local utils = require "src.utils"
 local episode_status = require "src.services.episode_status"
@@ -63,7 +65,7 @@ local function update_episode_status_from_cache(episodes_data)
 end
 
 local function init_after_bangumi_id()
-  bgm.update_bangumi_collection().async {
+  bangumi_service.update_bangumi_collection().async {
     resp = function(resp)
       if resp.update_message then
         mp.osd_message(resp.update_message, 3)
@@ -95,7 +97,7 @@ local function init_after_bangumi_id()
     if UpdateEpisodeTimer then
       UpdateEpisodeTimer:kill()
       UpdateEpisodeTimer = nil
-      bgm.update_episode().async {
+      bangumi_service.update_episode().async {
         resp = function(data)
           local updated = update_episode_status_from_cache(data and data.episodes_data or nil)
           if updated then
@@ -126,7 +128,7 @@ local function init(episode_id, opts)
   local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
   reset_globals()
   local source = episode_id and "manual" or "auto"
-  bgm.sync_context({
+  sync_context.sync_context({
     episode_id = episode_id,
     force_refresh = force_refresh,
     source = source,
@@ -205,7 +207,7 @@ mp.register_script_message("open-bangumi-url", function()
     mp.msg.error "未匹配到番剧信息"
     return
   end
-  bgm.open_url(AnimeInfo.bgm_url).execute()
+  bangumi_service.open_url(AnimeInfo.bgm_url).execute()
 end)
 
 mp.register_script_message("open-bangumi-info", function()
@@ -256,7 +258,7 @@ mp.register_script_message("bgm-search-anime", function(query)
     items = { ui_menu.format_menu_item("加载中...") },
   })
 
-  bgm.dandanplay_search(query).async {
+  dandanplay_service.dandanplay_search(query).async {
     resp = function(data)
       local items = {}
       for i, item in ipairs(data or {}) do
@@ -313,7 +315,7 @@ mp.register_script_message("bgm-search-episodes", function(anime_title, anime_id
     items = { ui_menu.format_menu_item("加载中...") },
   })
 
-  bgm.get_dandanplay_episodes(anime_id).async {
+  dandanplay_service.get_dandanplay_episodes(anime_id).async {
     resp = function(data)
       local items = {}
       for i, item in ipairs(data or {}) do
@@ -381,7 +383,7 @@ mp.register_script_message("manual-match", function()
       mp.msg.error "无效的番剧ID"
       return
     end
-    bgm.get_dandanplay_episodes(anime_id).async {
+    dandanplay_service.get_dandanplay_episodes(anime_id).async {
       resp = function(data)
         if not data or #data == 0 then
           mp.msg.error "没有找到匹配的剧集"
@@ -448,7 +450,7 @@ mp.register_script_message("manual-match", function()
     input.get {
       prompt = "请输入番剧名：",
       submit = function(text)
-        bgm.dandanplay_search(text).async {
+        dandanplay_service.dandanplay_search(text).async {
           resp = function(data)
             select_anime(data)
           end,

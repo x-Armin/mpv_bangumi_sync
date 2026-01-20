@@ -257,6 +257,21 @@ function M.update_episode(anime_info)
   }
 end
 
+-- 打开URL
+function M.open_url(url)
+  local platform = mp.get_property_native("platform")
+  local cmd
+  if platform == "windows" then
+    cmd = {"cmd", "/c", "start", "", url}
+  elseif platform == "darwin" then
+    cmd = {"open", url}
+  else
+    cmd = {"xdg-open", url}
+  end
+
+  return utils.subprocess_wrapper(cmd)
+end
+
 -- 搜索番剧
 
 return M
