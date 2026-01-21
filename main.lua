@@ -4,6 +4,7 @@ local bangumi_service = require "src.services.bangumi_service"
 local dandanplay_service = require "src.services.dandanplay_service"
 local db = require "src.db"
 local utils = require "src.utils"
+local mp_utils = require "mp.utils"
 local episode_status = require "src.services.episode_status"
 local title_guess = require "src.title_guess"
 local input = require "mp.input"
@@ -243,6 +244,72 @@ mp.register_script_message("open-bangumi-info", function()
 end)
 
 mp.register_script_message("bgm-noop", function() end)
+
+mp.register_script_message("bgm-info-menu-event", function(payload)
+  local event = mp_utils.parse_json(payload or "")
+  if not event or event.type ~= "activate" then
+    return
+  end
+
+  if event.action == "refresh" then
+    local file_path = mp.get_property("path")
+    if not file_path or file_path == "" then
+      mp.osd_message("无法获取当前文件路径", 2)
+      return
+    end
+    file_path = mp.command_native({ "normalize-path", file_path })
+    local db_record = db.get({ path = file_path })
+    if not db_record or not db_record.bgm_id or not db_record.dandanplay_id then
+      mp.osd_message("缺少缓存条目信息，无法刷新", 2)
+      return
+    end
+    local episodes = sync_context.get_user_episodes_cached(
+      db_record.dandanplay_id,
+      db_record.bgm_id,
+      { force_refresh = true }
+    )
+    if not episodes then
+      mp.osd_message("刷新剧集信息失败", 2)
+      return
+    end
+    local updated = update_episode_status_from_cache(episodes)
+    if updated then
+      EpisodesReady = true
+    end
+    ui_menu.update_info_menu({
+      UoscAvailable = UoscAvailable,
+      CurrentEpisodeInfo = CurrentEpisodeInfo,
+      EpisodeStatusText = EpisodeStatusText,
+      EpisodeProgressText = EpisodeProgressText,
+    })
+    mp.osd_message("已刷新", 2)
+    return
+  end
+
+  if event.action then
+    return
+  end
+
+  local modifiers = event.modifiers
+  if modifiers and modifiers ~= "alt" then
+    return
+  end
+
+  local value = event.value
+  if value == nil then
+    return
+  end
+
+  if type(value) == "table" then
+    mp.commandv(unpack(value))
+  else
+    mp.command(tostring(value))
+  end
+
+  if not event.keep_open and not modifiers then
+    mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
+  end
+end)
 
 mp.register_script_message("bgm-open-search-from-info", function()
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")

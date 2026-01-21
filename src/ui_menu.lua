@@ -64,11 +64,7 @@ function M.open_match_menu(matches)
   M.open_uosc_menu(menu_props)
 end
 
-function M.open_info_menu(state)
-  if not state.UoscAvailable then
-    mp.osd_message("未安装uosc，无法显示番剧信息窗口", 3)
-    return
-  end
+local function build_info_menu_props(state)
   local CurrentEpisodeInfo = state.CurrentEpisodeInfo
   local EpisodeStatusText = state.EpisodeStatusText
   local EpisodeProgressText = state.EpisodeProgressText
@@ -90,16 +86,16 @@ function M.open_info_menu(state)
     status_muted = true
   end
   local items = {
-    { 
+    {
       title = episode_title,
       hint  = "播放中",
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
       keep_open = true },
-    { 
+    {
       title = "进 度  " .. EpisodeProgressText,
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
       keep_open = true },
-    { 
+    {
       title = status_title,
       italic = status_italic, muted = status_muted,
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
@@ -108,18 +104,39 @@ function M.open_info_menu(state)
       title = "手动匹配",
       value = { "script-message-to", mp.get_script_name(), "bgm-open-search-from-info" },
       selectable = true,
-      keep_open = false },
+      keep_open = false,
+      actions = {
+        { name = "refresh", icon = "refresh", label = "根据当前匹配的番剧Id，重新获取单集信息" },
+      },
+      actions_place = "inside" },
     {
-      title = "打开Bangumi", 
+      title = "打开Bangumi",
       value = { "script-message", "open-bangumi-url" },
       selectable = true},
   }
-  M.open_uosc_menu({
+  return {
     type = "menu_bgm_info",
     title = title,
     search_style = "disabled",
+    callback = { mp.get_script_name(), "bgm-info-menu-event" },
     items = items,
-  })
+  }
 end
+
+function M.open_info_menu(state)
+  if not state.UoscAvailable then
+    mp.osd_message("未安装uosc，无法显示番剧信息窗口", 3)
+    return
+  end
+  M.open_uosc_menu(build_info_menu_props(state))
+end
+
+function M.update_info_menu(state)
+  if not state.UoscAvailable then
+    return
+  end
+  M.update_uosc_menu(build_info_menu_props(state))
+end
+
 
 return M
