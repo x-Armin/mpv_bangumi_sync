@@ -10,7 +10,7 @@ Options = {
 
   -- 补番存储目录（退出播放/关闭播放器时批量同步）
   -- Windows用分号分隔多个目录，Linux/Mac用冒号分隔
-  catchup_storages = "",
+  old_ani_storages = "",
 
   -- 观看进度达到该比例时标记为“已看”（0~1）
   progress_mark_threshold = 0.9,
@@ -80,12 +80,12 @@ end
 -- 处理配置
 Options.bgm_access_token = normalize_string(Options.bgm_access_token, "")
 Options.storages = normalize_string(Options.storages, "")
-Options.catchup_storages = normalize_string(Options.catchup_storages, "")
+Options.old_ani_storages = normalize_string(Options.old_ani_storages, "")
 Options.storages_list = parse_storages(Options.storages)
-Options.catchup_storages_list = parse_storages(Options.catchup_storages)
+Options.old_ani_storages_list = parse_storages(Options.old_ani_storages)
 Options.all_storages_list = merge_storages(
   Options.storages_list,
-  Options.catchup_storages_list
+  Options.old_ani_storages_list
 )
 Options.progress_mark_threshold = clamp_progress_threshold(
   Options.progress_mark_threshold,
@@ -105,7 +105,7 @@ M.config = {
   access_token = Options.bgm_access_token,
   storages = Options.all_storages_list,
   new_storages = Options.storages_list,
-  catchup_storages = Options.catchup_storages_list,
+  old_ani_storages = Options.old_ani_storages_list,
 }
 
 M.options = Options

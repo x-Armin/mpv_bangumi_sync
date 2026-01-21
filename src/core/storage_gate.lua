@@ -29,15 +29,15 @@ function M.is_in_storage_path(file_path, storages)
 end
 
 -- 判断是否为补番路径
-function M.is_catchup_path(file_path)
-  local list = (config.config and config.config.catchup_storages) or {}
+function M.is_old_path(file_path)
+  local list = (config.config and config.config.old_ani_storages) or {}
   return M.is_in_storage_path(file_path, list)
 end
 
--- 获取同步模式：new / catchup / nil
+-- 获取同步模式：new / old / nil
 function M.get_sync_mode(file_path)
-  if M.is_catchup_path(file_path) then
-    return "catchup"
+  if M.is_old_path(file_path) then
+    return "old"
   end
   local list = (config.config and config.config.new_storages) or {}
   if M.is_in_storage_path(file_path, list) then

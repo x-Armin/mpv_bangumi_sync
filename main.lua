@@ -100,15 +100,15 @@ local function init_after_bangumi_id()
     if UpdateEpisodeTimer then
       UpdateEpisodeTimer:kill()
       UpdateEpisodeTimer = nil
-      bangumi_service.update_episode({defer = (SyncMode == "catchup"), anime_info = AnimeInfo}).async {
+      bangumi_service.update_episode({defer = (SyncMode == "old"), anime_info = AnimeInfo}).async {
         resp = function(data)
           local updated = update_episode_status_from_cache(data and data.episodes_data or nil)
           if updated then
             EpisodesReady = true
           end
           if data.deferred then
-            mp.msg.info("Queued for batch sync")
-            mp.osd_message("Queued for batch sync", 3)
+            mp.msg.info("补番：已加入待批量同步列表")
+            mp.osd_message("补番：已加入待批量同步列表", 3)
           elseif data.skipped then
             mp.msg.info "同步Bangumi追番记录进度成功（无需更新）"
             mp.osd_message("同步Bangumi追番记录进度成功（无需更新）")

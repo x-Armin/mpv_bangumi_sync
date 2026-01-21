@@ -14,7 +14,7 @@ storages=你的新番存储目录路径
 
 # 补番存储目录（退出播放/关闭播放器时批量同步）
 # Windows用分号分隔多个目录，Linux/Mac用冒号分隔
-# catchup_storages=D:/AnimeOld;E:/AnimeOld
-# catchup_storages=/home/user/AnimeOld:/mnt/nas/AnimeOld
-catchup_storages=你的老番存储目录路径
+# old_ani_storages=D:/AnimeOld;E:/AnimeOld
+# old_ani_storages=/home/user/AnimeOld:/mnt/nas/AnimeOld
+old_ani_storages=你的老番存储目录路径
 
