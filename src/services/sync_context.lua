@@ -306,6 +306,8 @@ local function sync_context_execute(opts)
     }
   end
 
+  local sync_mode = storage_gate.get_sync_mode(file_path) or "new"
+
   local db_record = db.get({path = file_path})
   local episode_id = force_episode_id or (db_record and db_record.dandanplay_id)
   local episode_info = nil
@@ -452,6 +454,7 @@ local function sync_context_execute(opts)
       bgm_id = bgm_id,
       bgm_url = bgm_id and ("https://bgm.tv/subject/" .. tostring(bgm_id)) or nil,
       episodes = episodes,
+      sync_mode = sync_mode,
     },
   }
 end

@@ -130,4 +130,11 @@ function M.put(url, options)
   return M.request(url, options)
 end
 
+-- PATCH请求
+function M.patch(url, options)
+  options = options or {}
+  options.method = "PATCH"
+  return M.request(url, options)
+end
+
 return M

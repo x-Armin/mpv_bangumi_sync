@@ -19,6 +19,7 @@ BangumiCollectionReady = false
 EpisodesReady = false
 MatchResults = nil
 UoscAvailable = false
+SyncMode = "new"
 
 local function prune_db_on_start()
   local removed = db.prune({max_age_days = 30, remove_missing = false})
@@ -40,6 +41,7 @@ local function reset_globals()
   CurrentEpisodeInfo = nil
   EpisodeStatusText = "未获取"
   EpisodeProgressText = "未获取"
+  SyncMode = "new"
   if UpdateEpisodeTimer then
     UpdateEpisodeTimer:kill()
     UpdateEpisodeTimer = nil
@@ -97,13 +99,16 @@ local function init_after_bangumi_id()
     if UpdateEpisodeTimer then
       UpdateEpisodeTimer:kill()
       UpdateEpisodeTimer = nil
-      bangumi_service.update_episode().async {
+      bangumi_service.update_episode({defer = (SyncMode == "catchup"), anime_info = AnimeInfo}).async {
         resp = function(data)
           local updated = update_episode_status_from_cache(data and data.episodes_data or nil)
           if updated then
             EpisodesReady = true
           end
-          if data.skipped then
+          if data.deferred then
+            mp.msg.info("Queued for batch sync")
+            mp.osd_message("Queued for batch sync", 3)
+          elseif data.skipped then
             mp.msg.info "同步Bangumi追番记录进度成功（无需更新）"
             mp.osd_message("同步Bangumi追番记录进度成功（无需更新）")
           else
@@ -151,6 +156,7 @@ local function init(episode_id, opts)
       anime_info.bgm_id = result.context.bgm_id
       anime_info.bgm_url = result.context.bgm_url
       AnimeInfo = anime_info
+      SyncMode = result.context.sync_mode or "new"
       EpisodesReady = update_episode_status_from_cache(result.context.episodes)
 
       mp.msg.verbose(
@@ -183,6 +189,23 @@ mp.register_event("file-loaded", function()
     return
   end
   init()
+end)
+
+local function flush_pending_updates(reason)
+  local results = bangumi_service.flush_pending()
+  if results and #results > 0 then
+    mp.msg.info(string.format("Batch synced episodes: %d", #results))
+  end
+end
+
+
+mp.register_event("end-file", function(event)
+  if not event then
+    return
+  end
+  if event.reason == "quit" or event.reason == "stop" then
+    flush_pending_updates(event.reason)
+  end
 end)
 
 -- key bindings

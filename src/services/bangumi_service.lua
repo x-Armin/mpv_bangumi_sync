@@ -5,6 +5,42 @@ local bangumi_api = require "src.bangumi_api"
 local sync_context = require "src.services.sync_context"
 
 local M = {}
+
+local pending_episode_ids = {}
+
+local function queue_pending_episode(subject_id, episode_id)
+  if not subject_id or not episode_id then
+    return
+  end
+  local set = pending_episode_ids[subject_id]
+  if not set then
+    set = {}
+    pending_episode_ids[subject_id] = set
+  end
+  set[episode_id] = true
+end
+
+function M.flush_pending()
+  local results = {}
+  for subject_id, set in pairs(pending_episode_ids) do
+    local ids = {}
+    for episode_id in pairs(set) do
+      ids[#ids + 1] = episode_id
+    end
+    if #ids > 0 then
+      table.sort(ids)
+      local res = bangumi_api.update_episodes_status(subject_id, ids, 2)
+      if not res or not res.status_code or res.status_code == 0 or res.status_code >= 400 then
+        mp.msg.error("Batch update episode status failed:", subject_id)
+      else
+        results[#results + 1] = {subject_id = subject_id, count = #ids}
+        pending_episode_ids[subject_id] = nil
+      end
+    end
+  end
+  return results
+end
+
 local function get_current_file_path()
   local file_path = mp.get_property("path")
   if not file_path then
@@ -113,8 +149,10 @@ function M.fetch_episodes(opts, anime_info)
 end
 
 -- 更新剧集状态
-function M.update_episode(anime_info)
-  local info = anime_info or AnimeInfo
+function M.update_episode(opts)
+  opts = opts or {}
+  local info = opts.anime_info or AnimeInfo
+  local defer = opts.defer == true
   if not info or not info.bgm_id then
     mp.msg.error("未匹配到Bangumi ID，更新剧集失败")
     return utils.subprocess_err()
@@ -216,6 +254,22 @@ function M.update_episode(anime_info)
   if not bgm_episode_id then
     mp.msg.error("无法找到对应的剧集")
     return utils.subprocess_err()
+  end
+
+  if defer then
+    local changed = mark_episode_watched(episode)
+    persist_episodes_if_needed(changed)
+    queue_pending_episode(info.bgm_id, bgm_episode_id)
+    return {
+      execute = function()
+        return {progress = ep, total = #episodes, deferred = true, episodes_data = episodes_data}
+      end,
+      async = function(cb)
+        if cb and cb.resp then
+          cb.resp({progress = ep, total = #episodes, deferred = true, episodes_data = episodes_data})
+        end
+      end,
+    }
   end
   
   -- 检查是否已标记为看过
