@@ -130,6 +130,23 @@ function M.put(uri, data)
   return res
 end
 
+-- PATCH请求
+function M.patch(uri, data)
+  local url = API_URL .. uri
+  local res = http.patch(url, {
+    headers = get_headers(),
+    data = data,
+  })
+
+  if not res then
+    return {status_code = 500, body = {}}
+  end
+
+  mp.msg.verbose("bangumi_api PATCH response: " .. dump_for_log(res))
+  res.status_code = res.status_code or 200
+  return res
+end
+
 -- 获取用户收藏
 function M.get_user_collection(subject_id)
   local u = get_username()
@@ -168,6 +185,15 @@ function M.update_episode_status(episode_id, status)
   return M.put(
     string.format("/v0/users/-/collections/-/episodes/%d", episode_id),
     {type = status}
+  )
+end
+
+-- 批量更新剧集状态
+function M.update_episodes_status(subject_id, episode_ids, status)
+  status = status or 2
+  return M.patch(
+    string.format("/v0/users/-/collections/%d/episodes", subject_id),
+    {episode_id = episode_ids, type = status}
   )
 end
 

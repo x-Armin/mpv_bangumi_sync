@@ -6,6 +6,8 @@ local bangumi_api = require "src.bangumi_api"
 local dandanplay_api = require "src.dandanplay_api"
 local video_info = require "src.video_info"
 local config = require "src.config"
+local json_store = require "src.core.json_store"
+local storage_gate = require "src.core.storage_gate"
 
 local M = {}
 
@@ -89,6 +91,22 @@ local function read_cached_json(path, max_age, validate)
   return data
 end
 
+read_json_file = function(path)
+  return json_store.read(path)
+end
+
+write_json_file = function(path, data)
+  return json_store.write(path, data, {atomic = true})
+end
+
+is_cache_fresh = function(path, max_age)
+  return json_store.is_fresh(path, max_age)
+end
+
+read_cached_json = function(path, max_age, validate)
+  return json_store.read(path, {max_age = max_age, validate = validate})
+end
+
 local function build_episode_info_from_anime(anime_info, episode_id)
   if not anime_info or not anime_info.episodes then
     mp.msg.error("anime_info or episodes missing")
@@ -122,7 +140,7 @@ local function get_anime_info_cached(episode_id, anime_id, opts)
     if cached then
       mp.msg.verbose(
         string.format(
-          "sync_context: anime_info cache hit episode_id=%s anime_id=%s path=%s",
+          "sync_context: anime_info 缓存命中 episode_id=%s anime_id=%s path=%s",
           tostring(episode_id),
           tostring(anime_id),
           info_path
@@ -134,7 +152,7 @@ local function get_anime_info_cached(episode_id, anime_id, opts)
 
   mp.msg.verbose(
     string.format(
-      "sync_context: anime_info cache miss episode_id=%s anime_id=%s refresh=%s",
+      "sync_context: anime_info 缓存未命中 episode_id=%s anime_id=%s refresh=%s",
       tostring(episode_id),
       tostring(anime_id),
       tostring(force_refresh == true)
@@ -168,7 +186,7 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
     if cached then
       mp.msg.verbose(
         string.format(
-          "sync_context: episodes cache hit episode_id=%s bgm_id=%s path=%s",
+          "sync_context: episodes 缓存命中 episode_id=%s bgm_id=%s path=%s",
           tostring(episode_id),
           tostring(bgm_id),
           episodes_path
@@ -180,7 +198,7 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
 
   mp.msg.verbose(
     string.format(
-      "sync_context: episodes cache miss episode_id=%s bgm_id=%s refresh=%s",
+      "sync_context: episodes 缓存未命中 episode_id=%s bgm_id=%s refresh=%s",
       tostring(episode_id),
       tostring(bgm_id),
       tostring(force_refresh == true)
@@ -203,6 +221,10 @@ local function is_in_storage_path(file_path)
     end
   end
   return false
+end
+
+is_in_storage_path = function(file_path)
+  return storage_gate.is_in_storage_path(file_path)
 end
 
 -- 构造episode match
@@ -259,7 +281,7 @@ local function sync_context_execute(opts)
 
   mp.msg.verbose(
     string.format(
-      "sync_context: start source=%s force_refresh=%s ensure_episodes=%s force_episode_id=%s",
+      "sync_context: 开始 source=%s force_refresh=%s ensure_episodes=%s force_episode_id=%s",
       tostring(source),
       tostring(force_refresh == true),
       tostring(ensure_episodes),
@@ -269,22 +291,22 @@ local function sync_context_execute(opts)
   local file_path = get_current_file_path()
   local file_info = file_path and mp_utils.file_info(file_path) or nil
   if not file_info or not file_info.is_file then
-    mp.msg.verbose("sync_context: file_path invalid or not a file")
-    mp.msg.error("Invalid video path: " .. tostring(file_path))
-    return {status = "error", error = "VideoPathError", video = file_path}
+    mp.msg.verbose("sync_context: 文件路径无效或不是文件")
+    mp.msg.error("视频路径无效或不是文件")
+    return {status = "error", error = "VideoPathError", reason = "InvalidPath"}
   end
 
-  mp.msg.verbose("sync_context: file_path=" .. tostring(file_path))
+  mp.msg.verbose("sync_context: 已获取文件路径")
   if not is_in_storage_path(file_path) then
-    mp.msg.verbose("sync_context: file_path not in configured storages")
-    mp.msg.verbose("Video not in storage path: " .. file_path)
+    mp.msg.info("sync_context: 文件不在配置的存储路径内")
     return {
       status = "error",
       error = "VideoPathError",
-      video = file_path,
-      storage = config.config.storages or {},
+      reason = "NotInStorage",
     }
   end
+
+  local sync_mode = storage_gate.get_sync_mode(file_path) or "new"
 
   local db_record = db.get({path = file_path})
   local episode_id = force_episode_id or (db_record and db_record.dandanplay_id)
@@ -292,14 +314,14 @@ local function sync_context_execute(opts)
   local anime_info = nil
   mp.msg.verbose(
     string.format(
-      "sync_context: db_record dandanplay_id=%s bgm_id=%s",
+      "sync_context: db 记录 dandanplay_id=%s bgm_id=%s",
       tostring(db_record and db_record.dandanplay_id),
       tostring(db_record and db_record.bgm_id)
     )
   )
 
   if force_episode_id then
-    mp.msg.verbose("sync_context: force_episode_id=" .. tostring(force_episode_id))
+    mp.msg.verbose("sync_context: 强制 episode_id=" .. tostring(force_episode_id))
     db.set_dandanplay_id(file_path, force_episode_id)
   end
 
@@ -308,22 +330,22 @@ local function sync_context_execute(opts)
     local filename = file_path:match("([^/\\]+)$") or file_path
     local autoload_id = db.get_autoload_source(dir_path, filename)
     if autoload_id then
-      mp.msg.verbose("sync_context: autoload_id=" .. tostring(autoload_id))
+      mp.msg.verbose("sync_context: 自动加载 episode_id=" .. tostring(autoload_id))
       episode_id = autoload_id
     end
   end
 
   if episode_id then
-    mp.msg.verbose("sync_context: episode_id=" .. tostring(episode_id))
+    mp.msg.verbose("sync_context: 当前 episode_id=" .. tostring(episode_id))
     episode_info = db.get_episode_info(episode_id)
     if episode_info then
-      mp.msg.verbose("sync_context: episode_info cache hit")
+      mp.msg.verbose("sync_context: episode_info 缓存命中")
     end
   end
 
   if not episode_id then
     local matches = get_match_info(file_path)
-    mp.msg.verbose("sync_context: match candidates=" .. tostring(#matches))
+    mp.msg.verbose("sync_context: 匹配候选数=" .. tostring(#matches))
     if #matches > 1 then
       local dir_path = file_path:match("^(.+)/[^/]+$") or file_path:match("^(.+)\\[^\\]+$") or ""
       local folder_info = dir_path ~= "" and db.get_folder_info(dir_path) or nil
@@ -332,7 +354,7 @@ local function sync_context_execute(opts)
           local match_anime_id = math.floor(match.episodeId / 10000)
           if match_anime_id == folder_info.anime_id then
             mp.msg.verbose(
-              "sync_context: auto-pick match by manual anime_id=" .. tostring(folder_info.anime_id)
+              "sync_context: 通过手动 anime_id 自动选择匹配=" .. tostring(folder_info.anime_id)
             )
             episode_info = match
             episode_id = match.episodeId
@@ -342,14 +364,14 @@ local function sync_context_execute(opts)
           end
         end
         if not episode_id then
-          mp.msg.verbose("sync_context: manual anime_id not found in candidates")
+          mp.msg.verbose("sync_context: 候选中未找到手动 anime_id")
         end
       end
 
       if not episode_id then
         local filename = file_path:match("([^/\\]+)$") or file_path
         local info = utils.extract_info_from_filename(filename)
-        mp.msg.verbose("sync_context: match requires selection")
+        mp.msg.verbose("sync_context: 匹配结果需要手动选择")
         return {
           status = "select",
           info = info,
@@ -361,7 +383,7 @@ local function sync_context_execute(opts)
     if not episode_id then
       episode_info = matches[1]
       if episode_info then
-        mp.msg.verbose("sync_context: match picked episode_id=" .. tostring(episode_info.episodeId))
+        mp.msg.verbose("sync_context: 选中匹配 episode_id=" .. tostring(episode_info.episodeId))
         episode_id = episode_info.episodeId
         db.set_dandanplay_id(file_path, episode_id)
         db.set_episode_info(episode_id, episode_info)
@@ -371,14 +393,14 @@ local function sync_context_execute(opts)
 
   if not episode_id then
     mp.msg.error("Match failed: " .. file_path)
-    mp.msg.verbose("sync_context: no episode_id after match attempts")
+    mp.msg.verbose("sync_context: 匹配后仍未获得 episode_id")
     return {status = "error", error = "MatchNotFound", video = file_path}
   end
 
   if source == "manual" then
     local anime_id = math.floor(episode_id / 10000)
     db.set_manual_selection(file_path, anime_id)
-    mp.msg.verbose("sync_context: stored manual anime_id=" .. tostring(anime_id))
+    mp.msg.verbose("sync_context: 已保存手动 anime_id=" .. tostring(anime_id))
   end
 
   if not episode_info then
@@ -386,14 +408,14 @@ local function sync_context_execute(opts)
     anime_info = get_anime_info_cached(episode_id, anime_id, {force_refresh = refresh})
     episode_info = build_episode_info_from_anime(anime_info, episode_id)
     if episode_info then
-      mp.msg.verbose("sync_context: episode_info built from anime_info")
+      mp.msg.verbose("sync_context: 已从 anime_info 构建 episode_info")
       db.set_episode_info(episode_id, episode_info)
     end
   end
 
   if not episode_info then
     mp.msg.error("Episode info not available: " .. tostring(episode_id))
-    mp.msg.verbose("sync_context: episode_info missing after anime_info lookup")
+    mp.msg.verbose("sync_context: 查询 anime_info 后仍缺少 episode_info")
     return {status = "error", error = "EpisodeInfoError", episode_id = episode_id}
   end
 
@@ -406,12 +428,12 @@ local function sync_context_execute(opts)
 
   if not anime_info or not anime_info.bangumiUrl then
     mp.msg.error("Anime info not available: " .. tostring(episode_id))
-    mp.msg.verbose("sync_context: anime_info missing or no bangumiUrl")
+    mp.msg.verbose("sync_context: anime_info 缺失或无 bangumiUrl")
     return {status = "error", error = "AnimeInfoError", episode_id = episode_id}
   end
 
   local bgm_id = tonumber(anime_info.bangumiUrl:match("/(%d+)$"))
-  mp.msg.verbose("sync_context: bgm_id=" .. tostring(bgm_id))
+  mp.msg.verbose("sync_context: 解析 bgm_id=" .. tostring(bgm_id))
   if bgm_id then
     db.set_bgm_id(file_path, bgm_id)
   end
@@ -419,7 +441,7 @@ local function sync_context_execute(opts)
   local episodes = nil
   if ensure_episodes then
     episodes = get_user_episodes_cached(episode_id, bgm_id, {force_refresh = refresh})
-    mp.msg.verbose("sync_context: episodes loaded=" .. tostring(episodes ~= nil))
+    mp.msg.verbose("sync_context: episodes 已加载=" .. tostring(episodes ~= nil))
   end
 
   return {
@@ -432,6 +454,7 @@ local function sync_context_execute(opts)
       bgm_id = bgm_id,
       bgm_url = bgm_id and ("https://bgm.tv/subject/" .. tostring(bgm_id)) or nil,
       episodes = episodes,
+      sync_mode = sync_mode,
     },
   }
 end
@@ -509,326 +532,9 @@ end
 
 
 -- 打开URL
-function M.open_url(url)
-  local platform = mp.get_property_native("platform")
-  local cmd
-  if platform == "windows" then
-    cmd = {"cmd", "/c", "start", "", url}
-  elseif platform == "darwin" then
-    cmd = {"open", url}
-  else
-    cmd = {"xdg-open", url}
-  end
-  
-  return utils.subprocess_wrapper(cmd)
-end
 
--- 更新Bangumi收藏
-function M.update_bangumi_collection()
-  if not AnimeInfo or not AnimeInfo.bgm_id then
-    mp.msg.error("未匹配到Bangumi ID，更新条目失败")
-    return utils.subprocess_err()
-  end
-  
-  local subject_id = AnimeInfo.bgm_id
-  local res = bangumi_api.get_user_collection(subject_id)
-  
-  if not res or not res.body then
-    mp.msg.error("获取用户收藏失败")
-    return utils.subprocess_err()
-  end
-  
-  local status = res.body.type
-  local update_message = nil
-  mp.msg.error("获取用户收藏状态:" .. res.status_code)
-  if not status then
-    -- 404，未收藏
-    if res.status_code == 404 then
-      bangumi_api.update_user_collection(subject_id, 3)
-      update_message = "条目状态更新：未看 -> 在看"
-    end
-  else
-    -- 已收藏，检查状态
-    local status_map = {"想看", nil, nil, "搁置", "抛弃"}
-    local update_from = status_map[status]
-    if update_from then
-      bangumi_api.update_user_collection(subject_id, 3)
-      update_message = "条目状态更新：" .. update_from .. " -> 在看"
-    end
-  end
-  
-  return {
-    execute = function()
-      return {update_message = update_message}
-    end,
-    async = function(cb)
-      if cb and cb.resp then
-        cb.resp({update_message = update_message})
-      end
-    end,
-  }
-end
-
--- 获取剧集列表
-function M.fetch_episodes(opts)
-  local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
-  if not AnimeInfo or not AnimeInfo.bgm_id then
-    mp.msg.error("未匹配到Bangumi ID，更新剧集失败")
-    return utils.subprocess_err()
-  end
-  local file_path = get_current_file_path()
-  local db_record = file_path and db.get({path = file_path}) or nil
-
-  if not db_record or not db_record.bgm_id or not db_record.dandanplay_id then
-    mp.msg.error("无法获取Bangumi ID和Dandanplay ID")
-    return utils.subprocess_err()
-  end
-
-  local episodes = get_user_episodes_cached(
-    db_record.dandanplay_id,
-    db_record.bgm_id,
-    {force_refresh = force_refresh}
-  )
-  if not episodes then
-    mp.msg.error("获取剧集列表失败")
-    return utils.subprocess_err()
-  end
-
-  local changed = mark_episode_watched(episode)
-  persist_episodes_if_needed(changed)
-
-  return {
-    execute = function()
-      return {success = true}
-    end,
-    async = function(cb)
-      if cb and cb.resp then
-        cb.resp({success = true})
-      end
-    end,
-  }
-end
-
--- 更新剧集状态
-function M.update_episode()
-  if not AnimeInfo or not AnimeInfo.bgm_id then
-    mp.msg.error("未匹配到Bangumi ID，更新剧集失败")
-    return utils.subprocess_err()
-  end
-  
-  local file_path = mp.get_property("path")
-  file_path = mp.command_native({"normalize-path", file_path})
-  local db_record = db.get({path = file_path})
-  
-  if not db_record or not db_record.bgm_id or not db_record.dandanplay_id then
-    mp.msg.error("无法获取Bangumi ID和Dandanplay ID")
-    return utils.subprocess_err()
-  end
-  
-  local episode_id = db_record.dandanplay_id
-  local ep = episode_id % 10000
-  
-  local episodes_path = db.get_path(episode_id, "episodes")
-  local file = io.open(episodes_path, "r")
-  if not file then
-    mp.msg.error("剧集文件不存在: " .. episodes_path)
-    return utils.subprocess_err()
-  end
-  
-  local content = file:read("*all")
-  file:close()
-  local episodes_data = mp_utils.parse_json(content)
-  
-  if not episodes_data or not episodes_data.data then
-    mp.msg.error("无法解析剧集文件")
-    return utils.subprocess_err()
-  end
-  
-  local episodes = episodes_data.data
-  local bgm_episode_id = nil
-  local episode = nil
-  local function mark_episode_watched(ep_info)
-    if not ep_info then
-      return false
-    end
-    local changed = false
-    if ep_info.type ~= 2 then
-      ep_info.type = 2
-      changed = true
-    end
-    if ep_info.status ~= nil and ep_info.status ~= 2 then
-      ep_info.status = 2
-      changed = true
-    end
-    if ep_info.episode and ep_info.episode.status ~= nil and ep_info.episode.status ~= 2 then
-      ep_info.episode.status = 2
-      changed = true
-    end
-    return changed
-  end
-  local function persist_episodes_if_needed(changed)
-    if not changed then
-      return
-    end
-    local out = io.open(episodes_path, "w")
-    if out then
-      out:write(mp_utils.format_json(episodes_data) or "{}")
-      out:close()
-    end
-  end
-  
-  if ep > 1000 then
-    -- 特殊集，通过标题匹配
-    local episode_info = construct_episode_match(episode_id)
-    if not episode_info then
-      mp.msg.error("无法匹配剧集信息")
-      return utils.subprocess_err()
-    end
-    
-    local title = episode_info.episodeTitle
-    local max_conf = 0
-    local max_idx = 1
-    
-    for i, ep_info in ipairs(episodes) do
-      local conf1 = utils.fuzzy_match_title(title, ep_info.episode.name or "")
-      local conf2 = utils.fuzzy_match_title(title, ep_info.episode.name_cn or "")
-      local conf = math.max(conf1, conf2)
-      if conf > max_conf then
-        max_conf = conf
-        max_idx = i
-      end
-    end
-    
-    if max_conf < 0.8 then
-      mp.msg.error("无法匹配剧集标题，相似度: " .. max_conf)
-      return utils.subprocess_err()
-    end
-    
-    episode = episodes[max_idx]
-    bgm_episode_id = episode.episode.id
-  else
-    -- 普通集，通过集数匹配
-    for _, ep_info in ipairs(episodes) do
-      if ep_info.episode.ep == ep then
-        episode = ep_info
-        bgm_episode_id = episode.episode.id
-        break
-      end
-    end
-  end
-  
-  if not bgm_episode_id then
-    mp.msg.error("无法找到对应的剧集")
-    return utils.subprocess_err()
-  end
-  
-  -- 检查是否已标记为看过
-  local prev_status = bangumi_api.get_episode_status(bgm_episode_id)
-  if prev_status and prev_status.body and prev_status.body.type == 2 then
-    local changed = mark_episode_watched(episode)
-    persist_episodes_if_needed(changed)
-    return {
-      execute = function()
-        return {progress = ep, total = #episodes, skipped = true, episodes_data = episodes_data}
-      end,
-      async = function(cb)
-        if cb and cb.resp then
-          cb.resp({progress = ep, total = #episodes, skipped = true, episodes_data = episodes_data})
-        end
-      end,
-    }
-  end
-  
-  -- 更新剧集状态
-  local res = bangumi_api.update_episode_status(bgm_episode_id, 2)
-  if not res or res.status_code >= 400 then
-    mp.msg.error("更新剧集状态失败")
-    return utils.subprocess_err()
-  end
-  -- 本地标记为已看并持久化（补偿性更新），使返回的 episodes_data 包含最新状态
-  local changed = mark_episode_watched(episode)
-  persist_episodes_if_needed(changed)
-
-  return {
-    execute = function()
-      return {progress = ep, total = #episodes, episodes_data = episodes_data}
-    end,
-    async = function(cb)
-      if cb and cb.resp then
-        cb.resp({progress = ep, total = #episodes, episodes_data = episodes_data})
-      end
-    end,
-  }
-end
-
--- 搜索番剧
-function M.dandanplay_search(keyword)
-  return {
-    execute = function()
-      local results = dandanplay_api.search_anime(keyword)
-      local formatted = {}
-      for _, result in ipairs(results) do
-        table.insert(formatted, {
-          id = result.animeId,
-          title = result.animeTitle,
-          type = result.type,
-        })
-      end
-      return formatted
-    end,
-    async = function(cb)
-      if cb and cb.resp then
-        local results = dandanplay_api.search_anime(keyword)
-        local formatted = {}
-        for _, result in ipairs(results) do
-          table.insert(formatted, {
-            id = result.animeId,
-            title = result.animeTitle,
-            type = result.type,
-          })
-        end
-        cb.resp(formatted)
-      end
-    end,
-  }
-end
-
--- 获取剧集列表
-function M.get_dandanplay_episodes(anime_id)
-  local anchor_id = anime_id * 10000 + 1
-  local anime_info = get_anime_info_cached(anchor_id, anime_id, {force_refresh = false})
-  
-  if not anime_info or not anime_info.episodes then
-    return {
-      execute = function()
-        return {}
-      end,
-      async = function(cb)
-        if cb and cb.resp then
-          cb.resp({})
-        end
-      end,
-    }
-  end
-  
-  local episodes = {}
-  for _, episode in ipairs(anime_info.episodes) do
-    table.insert(episodes, {
-      id = episode.episodeId,
-      title = episode.episodeTitle,
-    })
-  end
-  
-  return {
-    execute = function()
-      return episodes
-    end,
-    async = function(cb)
-      if cb and cb.resp then
-        cb.resp(episodes)
-      end
-    end,
-  }
-end
+M.construct_episode_match = construct_episode_match
+M.get_anime_info_cached = get_anime_info_cached
+M.get_user_episodes_cached = get_user_episodes_cached
 
 return M

@@ -1,10 +1,14 @@
-require "src.options"
-local bgm = require "src.bgm"
-local mp_utils = require "mp.utils"
+require "src.config"
+local sync_context = require "src.services.sync_context"
+local bangumi_service = require "src.services.bangumi_service"
+local dandanplay_service = require "src.services.dandanplay_service"
 local db = require "src.db"
 local utils = require "src.utils"
+local mp_utils = require "mp.utils"
+local episode_status = require "src.services.episode_status"
 local title_guess = require "src.title_guess"
 local input = require "mp.input"
+local ui_menu = require "src.ui_menu"
 
 -- global variables
 AnimeInfo = nil
@@ -16,6 +20,7 @@ BangumiCollectionReady = false
 EpisodesReady = false
 MatchResults = nil
 UoscAvailable = false
+SyncMode = "new"
 
 local function prune_db_on_start()
   local removed = db.prune({max_age_days = 30, remove_missing = false})
@@ -30,71 +35,14 @@ mp.register_script_message("uosc-version", function()
   UoscAvailable = true
 end)
 
-local function format_menu_item(message)
-  return {
-    title = message,
-    value = "",
-    italic = true,
-    keep_open = true,
-    selectable = false,
-    align = "center",
-  }
-end
-
-local function open_uosc_menu(props)
-  local json_props = utils.format_json(props)
-  mp.commandv("script-message-to", "uosc", "open-menu", json_props)
-end
-
-local function update_uosc_menu(props)
-  local json_props = utils.format_json(props)
-  mp.commandv("script-message-to", "uosc", "update-menu", json_props)
-end
-
-local function open_anime_search_menu(query)
-  local menu_props = {
-    type = "menu_bgm_anime",
-    title = "输入番剧名称",
-    search_style = "palette",
-    search_debounce = "submit",
-    search_suggestion = query,
-    on_search = { "script-message-to", mp.get_script_name(), "bgm-search-anime" },
-    footnote = "使用 enter 或 ctrl+enter 进行搜索",
-    items = {},
-  }
-  open_uosc_menu(menu_props)
-end
-
-local function open_match_menu()
-  local items = {}
-  for i, match in ipairs(MatchResults or {}) do
-    items[i] = {
-      title = string.format("%d. %s - %s", i, match.animeTitle, match.episodeTitle),
-      value = { "script-message-to", mp.get_script_name(), "bgm-select-match", match.episodeId },
-      keep_open = false,
-      selectable = true,
-    }
-  end
-  items[#items + 1] = {
-    title = "没有结果，手动搜索",
-    value = { "script-message-to", mp.get_script_name(), "bgm-open-search" },
-    keep_open = false,
-    selectable = true,
-  }
-  local menu_props = {
-    type = "menu_bgm_match",
-    title = "请选择匹配结果",
-    search_style = "disabled",
-    items = items,
-  }
-  open_uosc_menu(menu_props)
-end
+-- UI/menu helpers moved to src/ui_menu.lua (ui_menu)
 
 local function reset_globals()
   AnimeInfo = nil
   CurrentEpisodeInfo = nil
   EpisodeStatusText = "未获取"
   EpisodeProgressText = "未获取"
+  SyncMode = "new"
   if UpdateEpisodeTimer then
     UpdateEpisodeTimer:kill()
     UpdateEpisodeTimer = nil
@@ -104,101 +52,23 @@ local function reset_globals()
   MatchResults = nil
 end
 
-local function get_episode_status_value(ep_info)
-  return ep_info and (ep_info.type or ep_info.status or (ep_info.episode and ep_info.episode.status)) or nil
-end
-
-local function map_episode_status(status)
-  local status_map = {
-    [0] = "未看",
-    [1] = "想看",
-    [2] = "已看",
-    [3] = "搁置",
-    [4] = "抛弃",
-  }
-  return status_map[status] or "未知"
-end
-
 local function update_episode_status_from_cache(episodes_data)
-  if not CurrentEpisodeInfo or not CurrentEpisodeInfo.episodeId then
+  local result = episode_status.compute(CurrentEpisodeInfo, episodes_data)
+  if not result then
     return false
   end
 
-  if not episodes_data then
-    local episodes_path = db.get_path(CurrentEpisodeInfo.episodeId, "episodes")
-    local info = mp_utils.file_info(episodes_path)
-    if not info or not info.is_file then
-      return false
-    end
-
-    local file = io.open(episodes_path, "r")
-    if not file then
-      return false
-    end
-
-    local content = file:read("*all")
-    file:close()
-    episodes_data = mp_utils.parse_json(content)
-  end
-
-  if not episodes_data or not episodes_data.data then
-    return false
-  end
-
-  local episodes = episodes_data.data
-  local ep = CurrentEpisodeInfo.episodeId % 10000
-  local target = nil
-  local total = #episodes
-  local watched = 0
-
-  for _, ep_info in ipairs(episodes) do
-    local status_value = get_episode_status_value(ep_info)
-    if status_value == 2 then
-      watched = watched + 1
-    end
-  end
-  EpisodeProgressText = string.format("%d / %d", watched, total)
-
-  if ep > 1000 then
-    local title = CurrentEpisodeInfo.episodeTitle or ""
-    local max_conf = 0
-    for _, ep_info in ipairs(episodes) do
-      local conf1 = utils.fuzzy_match_title(title, ep_info.episode and ep_info.episode.name or "")
-      local conf2 = utils.fuzzy_match_title(title, ep_info.episode and ep_info.episode.name_cn or "")
-      local conf = math.max(conf1, conf2)
-      if conf > max_conf then
-        max_conf = conf
-        target = ep_info
-      end
-    end
-  else
-    for _, ep_info in ipairs(episodes) do
-      if ep_info.episode and ep_info.episode.ep == ep then
-        target = ep_info
-        break
-      end
-    end
-  end
-
-  local status = get_episode_status_value(target)
-  EpisodeStatusText = map_episode_status(status)
-  if target and target.episode then
-    local ep_no = target.episode.ep
-    if type(ep_no) == "number" and ep_no > 0 then
-      CurrentEpisodeInfo.episodeEp = ep_no
-    end
-    local name_cn = target.episode.name_cn
-    local name = target.episode.name
-    local resolved_title = (name_cn and name_cn ~= "" and name_cn) or (name and name ~= "" and name) or nil
-    if resolved_title then
-      CurrentEpisodeInfo.episodeTitle = resolved_title
-    end
+  local progress = result.progress or {}
+  EpisodeProgressText = string.format("%d / %d", progress.watched or 0, progress.total or 0)
+  EpisodeStatusText = episode_status.map_status(result.status_value)
+  if result.episode_info then
+    CurrentEpisodeInfo = result.episode_info
   end
   return true
 end
 
 local function init_after_bangumi_id()
-  bgm.update_bangumi_collection().async {
+  bangumi_service.update_bangumi_collection().async {
     resp = function(resp)
       if resp.update_message then
         mp.osd_message(resp.update_message, 3)
@@ -230,13 +100,16 @@ local function init_after_bangumi_id()
     if UpdateEpisodeTimer then
       UpdateEpisodeTimer:kill()
       UpdateEpisodeTimer = nil
-      bgm.update_episode().async {
+      bangumi_service.update_episode({defer = (SyncMode == "old"), anime_info = AnimeInfo}).async {
         resp = function(data)
           local updated = update_episode_status_from_cache(data and data.episodes_data or nil)
           if updated then
             EpisodesReady = true
           end
-          if data.skipped then
+          if data.deferred then
+            mp.msg.info("补番：已加入待批量同步列表")
+            mp.osd_message("补番：已加入待批量同步列表", 3)
+          elseif data.skipped then
             mp.msg.info "同步Bangumi追番记录进度成功（无需更新）"
             mp.osd_message("同步Bangumi追番记录进度成功（无需更新）")
           else
@@ -261,7 +134,7 @@ local function init(episode_id, opts)
   local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
   reset_globals()
   local source = episode_id and "manual" or "auto"
-  bgm.sync_context({
+  sync_context.sync_context({
     episode_id = episode_id,
     force_refresh = force_refresh,
     source = source,
@@ -284,6 +157,7 @@ local function init(episode_id, opts)
       anime_info.bgm_id = result.context.bgm_id
       anime_info.bgm_url = result.context.bgm_url
       AnimeInfo = anime_info
+      SyncMode = result.context.sync_mode or "new"
       EpisodesReady = update_episode_status_from_cache(result.context.episodes)
 
       mp.msg.verbose(
@@ -295,7 +169,17 @@ local function init(episode_id, opts)
       init_after_bangumi_id()
     end,
     err = function(err)
-      mp.msg.error("获取番剧元信息失败", err)
+      if err and err.error == "VideoPathError" then
+    if err.reason == "NotInStorage" then
+      mp.msg.verbose("视频不在配置的存储路径内，跳过初始化")
+      return
+        end
+        if err.reason == "InvalidPath" then
+          mp.msg.error("视频路径无效")
+          return
+        end
+      end
+      mp.msg.error("获取番剧元信息失败")
     end,
   }
 end
@@ -306,6 +190,23 @@ mp.register_event("file-loaded", function()
     return
   end
   init()
+end)
+
+local function flush_pending_updates(reason)
+  local results = bangumi_service.flush_pending()
+  if results and #results > 0 then
+    mp.msg.info(string.format("Batch synced episodes: %d", #results))
+  end
+end
+
+
+mp.register_event("end-file", function(event)
+  if not event then
+    return
+  end
+  if event.reason == "quit" or event.reason == "stop" then
+    flush_pending_updates(event.reason)
+  end
 end)
 
 -- key bindings
@@ -330,63 +231,85 @@ mp.register_script_message("open-bangumi-url", function()
     mp.msg.error "未匹配到番剧信息"
     return
   end
-  bgm.open_url(AnimeInfo.bgm_url).execute()
+  bangumi_service.open_url(AnimeInfo.bgm_url).execute()
 end)
 
 mp.register_script_message("open-bangumi-info", function()
-  if not UoscAvailable then
-    mp.osd_message("未安装uosc，无法显示番剧信息窗口", 3)
-    return
-  end
-  local title = (CurrentEpisodeInfo and CurrentEpisodeInfo.animeTitle) or title_guess.get_default_search_query() or "未获取"
-  local episode_title = (CurrentEpisodeInfo and CurrentEpisodeInfo.episodeTitle) or "未获取"
-  local episode_ep = CurrentEpisodeInfo and CurrentEpisodeInfo.episodeEp
-  if type(episode_ep) == "number" and episode_ep > 0 then
-    episode_title = string.format("第%d话  %s", episode_ep, episode_title)
-  end
-  local status_title = "状态：" .. EpisodeStatusText
-  local status_italic = false
-  local status_muted = false
-  if EpisodeStatusText == "已看" then
-    status_title = "状态：已看 ✔"
-  elseif EpisodeStatusText == "未看" then
-    status_italic = true
-    status_muted = true
-  end
-  local items = {
-    { 
-      title = episode_title,
-      hint  = "播放中",
-      value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
-      keep_open = true },
-    { 
-      title = "进 度  " .. EpisodeProgressText,
-      value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
-      keep_open = true },
-    { 
-      title = status_title,
-      italic = status_italic, muted = status_muted,
-      value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
-      keep_open = true},
-    {
-      title = "手动匹配",
-      value = { "script-message-to", mp.get_script_name(), "bgm-open-search-from-info" },
-      selectable = true,
-      keep_open = false },
-    {
-      title = "打开Bangumi", 
-      value = { "script-message", "open-bangumi-url" },
-      selectable = true},
-  }
-  open_uosc_menu({
-    type = "menu_bgm_info",
-    title = title,
-    search_style = "disabled",
-    items = items,
+  ui_menu.open_info_menu({
+    UoscAvailable = UoscAvailable,
+    CurrentEpisodeInfo = CurrentEpisodeInfo,
+    EpisodeStatusText = EpisodeStatusText,
+    EpisodeProgressText = EpisodeProgressText,
   })
 end)
 
 mp.register_script_message("bgm-noop", function() end)
+
+mp.register_script_message("bgm-info-menu-event", function(payload)
+  local event = mp_utils.parse_json(payload or "")
+  if not event or event.type ~= "activate" then
+    return
+  end
+
+  if event.action == "refresh" then
+    local file_path = mp.get_property("path")
+    if not file_path or file_path == "" then
+      mp.osd_message("无法获取当前文件路径", 2)
+      return
+    end
+    file_path = mp.command_native({ "normalize-path", file_path })
+    local db_record = db.get({ path = file_path })
+    if not db_record or not db_record.bgm_id or not db_record.dandanplay_id then
+      mp.osd_message("缺少缓存条目信息，无法刷新", 2)
+      return
+    end
+    local episodes = sync_context.get_user_episodes_cached(
+      db_record.dandanplay_id,
+      db_record.bgm_id,
+      { force_refresh = true }
+    )
+    if not episodes then
+      mp.osd_message("刷新剧集信息失败", 2)
+      return
+    end
+    local updated = update_episode_status_from_cache(episodes)
+    if updated then
+      EpisodesReady = true
+    end
+    ui_menu.update_info_menu({
+      UoscAvailable = UoscAvailable,
+      CurrentEpisodeInfo = CurrentEpisodeInfo,
+      EpisodeStatusText = EpisodeStatusText,
+      EpisodeProgressText = EpisodeProgressText,
+    })
+    mp.osd_message("已刷新", 2)
+    return
+  end
+
+  if event.action then
+    return
+  end
+
+  local modifiers = event.modifiers
+  if modifiers and modifiers ~= "alt" then
+    return
+  end
+
+  local value = event.value
+  if value == nil then
+    return
+  end
+
+  if type(value) == "table" then
+    mp.commandv(unpack(value))
+  else
+    mp.command(tostring(value))
+  end
+
+  if not event.keep_open and not modifiers then
+    mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
+  end
+end)
 
 mp.register_script_message("bgm-open-search-from-info", function()
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
@@ -396,12 +319,12 @@ end)
 mp.register_script_message("bgm-open-search", function()
   MatchResults = nil
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_match")
-  open_anime_search_menu(title_guess.get_default_search_query())
+  ui_menu.open_anime_search_menu(title_guess.get_default_search_query())
 end)
 
 mp.register_script_message("bgm-search-anime", function(query)
   if not query or query == "" then
-    update_uosc_menu({
+    ui_menu.update_uosc_menu({
       type = "menu_bgm_anime",
       title = "输入番剧名称",
       search_style = "palette",
@@ -409,12 +332,12 @@ mp.register_script_message("bgm-search-anime", function(query)
       search_suggestion = "",
       on_search = { "script-message-to", mp.get_script_name(), "bgm-search-anime" },
       footnote = "使用 enter 或 ctrl+enter 进行搜索",
-      items = { format_menu_item("请输入番剧名称") },
+      items = { ui_menu.format_menu_item("请输入番剧名称") },
     })
     return
   end
 
-  update_uosc_menu({
+  ui_menu.update_uosc_menu({
     type = "menu_bgm_anime",
     title = "输入番剧名称",
     search_style = "palette",
@@ -422,10 +345,10 @@ mp.register_script_message("bgm-search-anime", function(query)
     search_suggestion = query,
     on_search = { "script-message-to", mp.get_script_name(), "bgm-search-anime" },
     footnote = "正在加载搜索结果...",
-    items = { format_menu_item("加载中...") },
+    items = { ui_menu.format_menu_item("加载中...") },
   })
 
-  bgm.dandanplay_search(query).async {
+  dandanplay_service.dandanplay_search(query).async {
     resp = function(data)
       local items = {}
       for i, item in ipairs(data or {}) do
@@ -438,9 +361,9 @@ mp.register_script_message("bgm-search-anime", function(query)
         }
       end
       if #items == 0 then
-        items = { format_menu_item("无搜索结果") }
+        items = { ui_menu.format_menu_item("无搜索结果") }
       end
-      update_uosc_menu({
+      ui_menu.update_uosc_menu({
         type = "menu_bgm_anime",
         title = "输入番剧名称",
         search_style = "palette",
@@ -453,7 +376,7 @@ mp.register_script_message("bgm-search-anime", function(query)
     end,
     err = function(err)
       mp.msg.error("搜索番剧失败:", err)
-      update_uosc_menu({
+      ui_menu.update_uosc_menu({
         type = "menu_bgm_anime",
         title = "输入番剧名称",
         search_style = "palette",
@@ -461,7 +384,7 @@ mp.register_script_message("bgm-search-anime", function(query)
         search_suggestion = query,
         on_search = { "script-message-to", mp.get_script_name(), "bgm-search-anime" },
         footnote = "搜索失败，请重试",
-        items = { format_menu_item("搜索番剧失败") },
+        items = { ui_menu.format_menu_item("搜索番剧失败") },
       })
     end,
   }
@@ -474,15 +397,15 @@ mp.register_script_message("bgm-search-episodes", function(anime_title, anime_id
   end
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_anime")
 
-  open_uosc_menu({
+  ui_menu.open_uosc_menu({
     type = "menu_bgm_episodes",
     title = string.format("选择剧集: %s", anime_title),
     search_style = "on_demand",
     footnote = "正在加载剧集...",
-    items = { format_menu_item("加载中...") },
+    items = { ui_menu.format_menu_item("加载中...") },
   })
 
-  bgm.get_dandanplay_episodes(anime_id).async {
+  dandanplay_service.get_dandanplay_episodes(anime_id).async {
     resp = function(data)
       local items = {}
       for i, item in ipairs(data or {}) do
@@ -495,9 +418,9 @@ mp.register_script_message("bgm-search-episodes", function(anime_title, anime_id
         }
       end
       if #items == 0 then
-        items = { format_menu_item("没有找到匹配的剧集") }
+        items = { ui_menu.format_menu_item("没有找到匹配的剧集") }
       end
-      update_uosc_menu({
+      ui_menu.update_uosc_menu({
         type = "menu_bgm_episodes",
         title = string.format("选择剧集: %s", anime_title),
         search_style = "on_demand",
@@ -507,12 +430,12 @@ mp.register_script_message("bgm-search-episodes", function(anime_title, anime_id
     end,
     err = function(err)
       mp.msg.error("获取剧集信息失败:", err)
-      update_uosc_menu({
+      ui_menu.update_uosc_menu({
         type = "menu_bgm_episodes",
         title = string.format("选择剧集: %s", anime_title),
         search_style = "on_demand",
         footnote = "获取失败，请重试",
-        items = { format_menu_item("获取剧集信息失败") },
+        items = { ui_menu.format_menu_item("获取剧集信息失败") },
       })
     end,
   }
@@ -539,10 +462,10 @@ end)
 mp.register_script_message("manual-match", function()
   if UoscAvailable then
     if MatchResults then
-      open_match_menu()
+      ui_menu.open_match_menu(MatchResults)
       return
     end
-    open_anime_search_menu(title_guess.get_default_search_query())
+    ui_menu.open_anime_search_menu(title_guess.get_default_search_query())
     return
   end
   local select_episode = function(anime_id)
@@ -550,7 +473,7 @@ mp.register_script_message("manual-match", function()
       mp.msg.error "无效的番剧ID"
       return
     end
-    bgm.get_dandanplay_episodes(anime_id).async {
+    dandanplay_service.get_dandanplay_episodes(anime_id).async {
       resp = function(data)
         if not data or #data == 0 then
           mp.msg.error "没有找到匹配的剧集"
@@ -617,7 +540,7 @@ mp.register_script_message("manual-match", function()
     input.get {
       prompt = "请输入番剧名：",
       submit = function(text)
-        bgm.dandanplay_search(text).async {
+        dandanplay_service.dandanplay_search(text).async {
           resp = function(data)
             select_anime(data)
           end,
