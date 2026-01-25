@@ -205,9 +205,13 @@ mp.register_event("end-file", function(event)
   if not event then
     return
   end
-  if event.reason == "quit" or event.reason == "stop" then
+  if event.reason == "quit" then
     flush_pending_updates(event.reason)
   end
+end)
+
+mp.register_event("shutdown", function()
+  flush_pending_updates("shutdown")
 end)
 
 -- key bindings

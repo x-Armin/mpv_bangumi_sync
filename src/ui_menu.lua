@@ -92,14 +92,14 @@ local function build_info_menu_props(state)
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
       keep_open = true },
     {
-      title = "进 度  " .. EpisodeProgressText,
-      value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
-      keep_open = true },
-    {
       title = status_title,
       italic = status_italic, muted = status_muted,
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
       keep_open = true},
+    {
+      title = "进 度  " .. EpisodeProgressText,
+      value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
+      keep_open = true },
     {
       title = "手动匹配",
       value = { "script-message-to", mp.get_script_name(), "bgm-open-search-from-info" },
