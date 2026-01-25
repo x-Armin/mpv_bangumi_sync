@@ -81,7 +81,7 @@ function M.update_bangumi_collection(anime_info)
   
   local status = res.body.type
   local update_message = nil
-  mp.msg.error("获取用户收藏状态:" .. res.status_code)
+  mp.msg.info("获取用户收藏状态:" .. res.status_code)
   if not status then
     -- 404，未收藏
     if res.status_code == 404 then

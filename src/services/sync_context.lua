@@ -332,6 +332,8 @@ local function sync_context_execute(opts)
     if autoload_id then
       mp.msg.verbose("sync_context: 自动加载 episode_id=" .. tostring(autoload_id))
       episode_id = autoload_id
+    else
+      mp.msg.verbose("sync_context: 自动加载episode_id失败")
     end
   end
 

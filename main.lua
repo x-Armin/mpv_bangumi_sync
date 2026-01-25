@@ -1,3 +1,4 @@
+-- mpv_bangumi_sync v1.0.0
 require "src.config"
 local sync_context = require "src.services.sync_context"
 local bangumi_service = require "src.services.bangumi_service"
