@@ -12,6 +12,7 @@ function M.request(url, options)
   local headers = options.headers or {}
   local params = options.params
   local data = options.data
+  local detach = options.detach == true
 
   -- 构建curl命令
   local args = {"curl", "-s", "-S", "-X", method}
@@ -59,8 +60,9 @@ function M.request(url, options)
     name = "subprocess",
     args = args,
     playback_only = false,
-    capture_stdout = true,
-    capture_stderr = true,
+    capture_stdout = not detach,
+    capture_stderr = not detach,
+    detach = detach,
   })
 
   -- 日志：打印 subprocess 返回的 result（尽量 JSON 序列化，否则输出关键字段）
@@ -78,11 +80,15 @@ function M.request(url, options)
     end
   end
 
-  if result.status ~= 0 then
+  if result and result.status and result.status ~= 0 then
     mp.msg.error("HTTP request subprocess failed: " .. (result.stderr or ""))
   end
 
-  local stdout = result.stdout or ""
+  if detach then
+    return {status_code = 0, body = "", raw_body = "", detached = true}
+  end
+
+  local stdout = result and result.stdout or ""
   -- 解析通过 -w 写入的状态码标记，格式为 "__HTTP_STATUS__:XXX" 位于输出末尾
   local status_code = tonumber(stdout:match("__HTTP_STATUS__:(%d%d%d)%s*$"))
   local body = stdout:gsub("\n__HTTP_STATUS__:%d%d%d%s*$", "")

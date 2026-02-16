@@ -34,6 +34,8 @@ mpv-lazy/portable_config/scripts/mpv_bangumi_sync
 `command:info:script-message open-bangumi-info?番剧信息`
 放在喜欢的位置即可
 
+- 进度阈值（0~1）：`progress_mark_threshold`，默认 0.9
+- 补番批量同步阈值：`batch_sync_threshold`，默认 4；设为 0 表示不自动批量同步
 ## 使用
 - 播放视频后自动匹配番剧，进度达到阈值（默认 0.9）时标记为“已看”
 - `Alt+o` 打开番剧信息窗口（依赖 uosc）

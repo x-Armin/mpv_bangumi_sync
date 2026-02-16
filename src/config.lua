@@ -14,6 +14,7 @@ Options = {
 
   -- 观看进度达到该比例时标记为“已看”（0~1）
   progress_mark_threshold = 0.9,
+  batch_sync_threshold = 4,
 }
 
 opt.read_options(Options, mp.get_script_name(), function() end)
@@ -35,6 +36,18 @@ end
 local function clamp_progress_threshold(value, default_value)
   local num = tonumber(value)
   if not num or num <= 0 or num > 1 then
+    return default_value
+  end
+  return num
+end
+
+local function clamp_batch_threshold(value, default_value)
+  local num = tonumber(value)
+  if not num then
+    return default_value
+  end
+  num = math.floor(num)
+  if num < 0 then
     return default_value
   end
   return num
@@ -90,6 +103,10 @@ Options.all_storages_list = merge_storages(
 Options.progress_mark_threshold = clamp_progress_threshold(
   Options.progress_mark_threshold,
   0.9
+)
+Options.batch_sync_threshold = clamp_batch_threshold(
+  Options.batch_sync_threshold,
+  4
 )
 
 -- 如果没有设置access_token，尝试从环境变量读取

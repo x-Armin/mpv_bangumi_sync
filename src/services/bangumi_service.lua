@@ -3,10 +3,20 @@ local mp_utils = require "mp.utils"
 local db = require "src.db"
 local bangumi_api = require "src.bangumi_api"
 local sync_context = require "src.services.sync_context"
+local config = require "src.config"
 
 local M = {}
 
 local pending_episode_ids = {}
+
+local function get_batch_sync_threshold()
+  local opts = config and config.options or {}
+  local threshold = tonumber(opts.batch_sync_threshold) or 0
+  if threshold < 0 then
+    threshold = 0
+  end
+  return math.floor(threshold)
+end
 
 local function queue_pending_episode(subject_id, episode_id)
   if not subject_id or not episode_id then
@@ -18,9 +28,19 @@ local function queue_pending_episode(subject_id, episode_id)
     pending_episode_ids[subject_id] = set
   end
   set[episode_id] = true
+  local threshold = get_batch_sync_threshold()
+  if threshold > 0 then
+    local count = 0
+    for _ in pairs(set) do
+      count = count + 1
+    end
+    if count >= threshold then
+      M.flush_pending()
+    end
+  end
 end
 
-function M.flush_pending()
+function M.flush_pending(opts)
   local results = {}
   for subject_id, set in pairs(pending_episode_ids) do
     local ids = {}
@@ -29,8 +49,9 @@ function M.flush_pending()
     end
     if #ids > 0 then
       table.sort(ids)
-      local res = bangumi_api.update_episodes_status(subject_id, ids, 2)
-      if not res or not res.status_code or res.status_code == 0 or res.status_code >= 400 then
+      local res = bangumi_api.update_episodes_status(subject_id, ids, 2, opts)
+      local detached_ok = res and res.detached == true
+      if not detached_ok and (not res or not res.status_code or res.status_code == 0 or res.status_code >= 400) then
         mp.msg.error("Batch update episode status failed:", subject_id)
       else
         results[#results + 1] = {subject_id = subject_id, count = #ids}

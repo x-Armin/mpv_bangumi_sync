@@ -131,11 +131,12 @@ function M.put(uri, data)
 end
 
 -- PATCH请求
-function M.patch(uri, data)
+function M.patch(uri, data, opts)
   local url = API_URL .. uri
   local res = http.patch(url, {
     headers = get_headers(),
     data = data,
+    detach = opts and opts.detach or false,
   })
 
   if not res then
@@ -189,11 +190,12 @@ function M.update_episode_status(episode_id, status)
 end
 
 -- 批量更新剧集状态
-function M.update_episodes_status(subject_id, episode_ids, status)
+function M.update_episodes_status(subject_id, episode_ids, status, opts)
   status = status or 2
   return M.patch(
     string.format("/v0/users/-/collections/%d/episodes", subject_id),
-    {episode_id = episode_ids, type = status}
+    {episode_id = episode_ids, type = status},
+    opts
   )
 end
 

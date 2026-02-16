@@ -193,8 +193,8 @@ mp.register_event("file-loaded", function()
   init()
 end)
 
-local function flush_pending_updates(reason)
-  local results = bangumi_service.flush_pending()
+local function flush_pending_updates(reason, opts)
+  local results = bangumi_service.flush_pending(opts)
   if results and #results > 0 then
     mp.msg.info(string.format("Batch synced episodes: %d", #results))
   end
@@ -206,12 +206,12 @@ mp.register_event("end-file", function(event)
     return
   end
   if event.reason == "quit" then
-    flush_pending_updates(event.reason)
+    flush_pending_updates(event.reason, {detach = true})
   end
 end)
 
 mp.register_event("shutdown", function()
-  flush_pending_updates("shutdown")
+  flush_pending_updates("shutdown", {detach = true})
 end)
 
 -- key bindings
