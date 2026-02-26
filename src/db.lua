@@ -34,6 +34,22 @@ local function split_path(path)
   return dir, filename
 end
 
+local function resolve_folder_and_filename(path_or_dir)
+  if not path_or_dir or path_or_dir == "" then
+    return nil, nil, nil
+  end
+  local normalized = normalize_path(path_or_dir)
+  local info = mp_utils.file_info(path_or_dir)
+  if info and info.is_dir then
+    return normalized, nil, normalized
+  end
+  local dir, filename = split_path(normalized)
+  if dir and filename then
+    return dir, filename, normalized
+  end
+  return normalized, nil, normalized
+end
+
 local function ensure_folder(db, dir_path)
   local key = normalize_path(dir_path)
   if not key or key == "" then
@@ -145,7 +161,7 @@ function M.get(query)
         end
         return {
           path = full_path,
-          bgm_id = entry.bgm_id,
+          bgm_id = folder.bgm_id,
           dandanplay_id = entry.dandanplay_id,
           anime_id = folder.anime_id,
           manual = folder.manual == true,
@@ -160,7 +176,7 @@ function M.get(query)
       if query.path and entry.path ~= query.path then
         match = false
       end
-      if query.bgm_id and entry.bgm_id ~= query.bgm_id then
+      if query.bgm_id and folder.bgm_id ~= query.bgm_id then
         match = false
       end
       if query.dandanplay_id and entry.dandanplay_id ~= query.dandanplay_id then
@@ -175,7 +191,7 @@ function M.get(query)
         end
         return {
           path = full_path,
-          bgm_id = entry.bgm_id,
+          bgm_id = folder.bgm_id,
           dandanplay_id = entry.dandanplay_id,
           anime_id = folder.anime_id,
           manual = folder.manual == true,
@@ -199,7 +215,7 @@ function M.set_bgm_id(path, id_)
   if not entry then
     return false
   end
-  entry.bgm_id = id_
+  folder.bgm_id = id_
   folder.last_seen = os.time()
   save_db(db)
   return true
@@ -252,6 +268,7 @@ function M.get_folder_info(dir_path)
   end
   return {
     anime_id = folder.anime_id,
+    bgm_id = folder.bgm_id,
     manual = folder.manual == true,
     entries = folder.entries,
   }
@@ -259,10 +276,7 @@ end
 
 function M.set_manual_selection(path_or_dir, anime_id)
   local db = load_db()
-  local dir, _ = split_path(path_or_dir)
-  if not dir then
-    dir = path_or_dir
-  end
+  local dir = resolve_folder_and_filename(path_or_dir)
   local folder = ensure_folder(db, dir)
   if not folder then
     return false
@@ -272,6 +286,30 @@ function M.set_manual_selection(path_or_dir, anime_id)
     folder.anime_id = anime_id
   end
   folder.last_seen = os.time()
+  save_db(db)
+  return true
+end
+
+function M.set_manual_bgm_id(path_or_dir, bgm_id)
+  local id_ = tonumber(bgm_id)
+  if not id_ then
+    return false
+  end
+  local db = load_db()
+  local dir, filename, normalized_path = resolve_folder_and_filename(path_or_dir)
+  local folder = ensure_folder(db, dir)
+  if not folder then
+    return false
+  end
+
+  folder.manual = true
+  folder.bgm_id = id_
+  folder.last_seen = os.time()
+
+  if filename then
+    ensure_entry(folder, filename, normalized_path)
+  end
+
   save_db(db)
   return true
 end

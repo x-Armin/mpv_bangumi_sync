@@ -199,6 +199,40 @@ function M.update_episodes_status(subject_id, episode_ids, status, opts)
   )
 end
 
+-- 搜索条目
+function M.search_subjects(keyword, opts)
+  keyword = tostring(keyword or "")
+  if keyword == "" then
+    return {status_code = 400, body = {error = "keyword is empty"}}
+  end
+  opts = opts or {}
+  local limit = tonumber(opts.limit) or 20
+  local offset = tonumber(opts.offset) or 0
+  local type_filter = opts.type_filter
+  if type_filter == nil then
+    type_filter = {2}
+  end
+
+  return M.post("/v0/search/subjects", {
+    keyword = keyword,
+    limit = limit,
+    offset = offset,
+    sort = opts.sort,
+    filter = {
+      type = type_filter,
+    },
+  })
+end
+
+-- 获取条目详情
+function M.get_subject(subject_id)
+  subject_id = tonumber(subject_id)
+  if not subject_id then
+    return {status_code = 400, body = {error = "invalid subject_id"}}
+  end
+  return M.get(string.format("/v0/subjects/%d", subject_id))
+end
+
 -- 获取用户名（延迟初始化）
 function M.get_username()
   return get_username()

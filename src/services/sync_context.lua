@@ -8,6 +8,7 @@ local video_info = require "src.video_info"
 local config = require "src.config"
 local json_store = require "src.core.json_store"
 local storage_gate = require "src.core.storage_gate"
+local episode_matcher = require "src.episode_matcher"
 
 local M = {}
 
@@ -271,13 +272,70 @@ local function format_match_results(matches)
   return match_list
 end
 
+local function split_file_path(path)
+  local dir_path = path:match("^(.+)/[^/]+$") or path:match("^(.+)\\[^\\]+$") or ""
+  local filename = path:match("([^/\\]+)$") or path
+  return dir_path, filename
+end
+
+local function get_episode_no_from_filename(filename)
+  local info = utils.extract_info_from_filename(filename or "")
+  if not info or type(info.episode) ~= "number" then
+    return nil
+  end
+  return info.episode
+end
+
+local function find_target_episode(episodes, episode_no)
+  local match = episode_matcher.match_by_number(episodes, episode_no)
+  return match and match.target or nil, match
+end
+
+local function get_subject_cached(bgm_id, episode_id, opts)
+  if not bgm_id then
+    return nil
+  end
+  local force_refresh = opts and opts.force_refresh
+  local info_path = db.get_path(episode_id, "info")
+  if not force_refresh then
+    local cached = read_cached_json(info_path, INFO_CACHE_MAX_AGE, function(data)
+      return data and data.id
+    end)
+    if cached then
+      mp.msg.verbose(
+        string.format(
+          "sync_context: subject 缓存命中 bgm_id=%s path=%s",
+          tostring(bgm_id),
+          info_path
+        )
+      )
+      return cached
+    end
+  end
+
+  mp.msg.verbose(
+    string.format(
+      "sync_context: subject 缓存未命中 bgm_id=%s refresh=%s",
+      tostring(bgm_id),
+      tostring(force_refresh == true)
+    )
+  )
+  local res = bangumi_api.get_subject(bgm_id)
+  if not res or not res.body or tonumber(res.status_code or 0) >= 400 then
+    return nil
+  end
+  write_json_file(info_path, res.body)
+  return res.body
+end
+
 local function sync_context_execute(opts)
   opts = opts or {}
   local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
   local force_episode_id = type(opts) == "table" and opts.episode_id or nil
+  local force_manual_bgm_id = type(opts) == "table" and tonumber(opts.manual_bgm_id) or nil
   local source = type(opts) == "table" and opts.source or nil
   local ensure_episodes = type(opts) ~= "table" or opts.ensure_episodes ~= false
-  local refresh = force_refresh or source == "manual"
+  local refresh = force_refresh or source == "manual" or source == "manual_bgm"
 
   mp.msg.verbose(
     string.format(
@@ -307,6 +365,7 @@ local function sync_context_execute(opts)
   end
 
   local sync_mode = storage_gate.get_sync_mode(file_path) or "new"
+  local dir_path, filename = split_file_path(file_path)
 
   local db_record = db.get({path = file_path})
   local episode_id = force_episode_id or (db_record and db_record.dandanplay_id)
@@ -320,14 +379,111 @@ local function sync_context_execute(opts)
     )
   )
 
+  local folder_info = dir_path ~= "" and db.get_folder_info(dir_path) or nil
+  local manual_bgm_id = force_manual_bgm_id
+  if not manual_bgm_id and folder_info and folder_info.manual and folder_info.bgm_id then
+    manual_bgm_id = tonumber(folder_info.bgm_id)
+  end
+
+  if manual_bgm_id and not force_episode_id then
+    local episode_no = get_episode_no_from_filename(filename)
+    if not episode_no then
+      mp.msg.error("无法从文件名解析集数: " .. tostring(filename))
+      return {
+        status = "error",
+        error = "EpisodeNumberNotFound",
+        reason = "EpisodeFromFilenameFailed",
+      }
+    end
+
+    local runtime_episode_id = manual_bgm_id * 10000 + episode_no
+    local episodes = get_user_episodes_cached(runtime_episode_id, manual_bgm_id, {force_refresh = refresh})
+    if not episodes or not episodes.data then
+      mp.msg.error("获取Bangumi剧集列表失败: " .. tostring(manual_bgm_id))
+      return {
+        status = "error",
+        error = "EpisodesError",
+        reason = "BangumiEpisodesUnavailable",
+      }
+    end
+
+    local target_ep, match_result = find_target_episode(episodes.data, episode_no)
+    if not target_ep then
+      local stats = match_result and match_result.stats or {}
+      mp.msg.error(
+        string.format(
+          "无法在Bangumi剧集中定位当前集: parsed_no=%s max_main_ep=%s mode=%s reason=%s",
+          tostring(episode_no),
+          tostring(stats and stats.max_main_ep),
+          tostring(match_result and match_result.mode),
+          tostring(match_result and match_result.reason)
+        )
+      )
+      return {
+        status = "error",
+        error = "EpisodeMappingNotFound",
+        reason = "BangumiEpisodeNotFound",
+      }
+    end
+    mp.msg.verbose(
+      string.format(
+        "sync_context: manual_bgm 匹配命中 mode=%s reason=%s parsed_no=%s max_main_ep=%s",
+        tostring(match_result and match_result.mode),
+        tostring(match_result and match_result.reason),
+        tostring(episode_no),
+        tostring(match_result and match_result.stats and match_result.stats.max_main_ep)
+      )
+    )
+    if match_result and match_result.reason == "sort_fallback_parsed_gt_max_ep" then
+      mp.msg.verbose("sync_context: 检测到累计编号映射，已使用 sort 兜底")
+    end
+
+    local subject = get_subject_cached(manual_bgm_id, runtime_episode_id, {force_refresh = refresh}) or {}
+    local anime_title = subject.name_cn or subject.name or ("Bangumi " .. tostring(manual_bgm_id))
+    local episode_title = (target_ep.episode and (target_ep.episode.name_cn or target_ep.episode.name)) or ("第" .. tostring(episode_no) .. "话")
+    local resolved_ep = target_ep.episode and tonumber(target_ep.episode.ep) or episode_no
+    local resolved_sort = target_ep.episode and tonumber(target_ep.episode.sort) or nil
+
+    episode_info = {
+      episodeId = runtime_episode_id,
+      animeId = manual_bgm_id,
+      episodeEp = resolved_ep,
+      episodeSort = resolved_sort,
+      episodeMatchMode = match_result and match_result.mode or nil,
+      animeTitle = anime_title,
+      episodeTitle = episode_title,
+      bgmEpisodeId = target_ep.episode and target_ep.episode.id or nil,
+      shift = 0.0,
+    }
+    anime_info = {
+      animeTitle = anime_title,
+      bangumiUrl = "https://bgm.tv/subject/" .. tostring(manual_bgm_id),
+    }
+
+    db.set_bgm_id(file_path, manual_bgm_id)
+    db.set_episode_info(runtime_episode_id, episode_info)
+
+    return {
+      status = "ok",
+      context = {
+        file_path = file_path,
+        episode_id = runtime_episode_id,
+        episode_info = episode_info,
+        anime_info = anime_info,
+        bgm_id = manual_bgm_id,
+        bgm_url = "https://bgm.tv/subject/" .. tostring(manual_bgm_id),
+        episodes = episodes,
+        sync_mode = sync_mode,
+      },
+    }
+  end
+
   if force_episode_id then
     mp.msg.verbose("sync_context: 强制 episode_id=" .. tostring(force_episode_id))
     db.set_dandanplay_id(file_path, force_episode_id)
   end
 
   if not episode_id then
-    local dir_path = file_path:match("^(.+)/[^/]+$") or file_path:match("^(.+)\\[^\\]+$") or ""
-    local filename = file_path:match("([^/\\]+)$") or file_path
     local autoload_id = db.get_autoload_source(dir_path, filename)
     if autoload_id then
       mp.msg.verbose("sync_context: 自动加载 episode_id=" .. tostring(autoload_id))
@@ -349,8 +505,6 @@ local function sync_context_execute(opts)
     local matches = get_match_info(file_path)
     mp.msg.verbose("sync_context: 匹配候选数=" .. tostring(#matches))
     if #matches > 1 then
-      local dir_path = file_path:match("^(.+)/[^/]+$") or file_path:match("^(.+)\\[^\\]+$") or ""
-      local folder_info = dir_path ~= "" and db.get_folder_info(dir_path) or nil
       if folder_info and folder_info.manual and folder_info.anime_id then
         for _, match in ipairs(matches) do
           local match_anime_id = math.floor(match.episodeId / 10000)
@@ -371,7 +525,6 @@ local function sync_context_execute(opts)
       end
 
       if not episode_id then
-        local filename = file_path:match("([^/\\]+)$") or file_path
         local info = utils.extract_info_from_filename(filename)
         mp.msg.verbose("sync_context: 匹配结果需要手动选择")
         return {

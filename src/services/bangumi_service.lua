@@ -4,6 +4,7 @@ local db = require "src.db"
 local bangumi_api = require "src.bangumi_api"
 local sync_context = require "src.services.sync_context"
 local config = require "src.config"
+local episode_matcher = require "src.episode_matcher"
 
 local M = {}
 
@@ -70,17 +71,64 @@ local function get_current_file_path()
   return mp.command_native({"normalize-path", file_path})
 end
 
-
-local function get_user_episodes_cached(episode_id, bgm_id, opts)
-  if sync_context and sync_context.get_user_episodes_cached then
-    return sync_context.get_user_episodes_cached(episode_id, bgm_id, opts)
+local function extract_episode_no_from_filename(file_path)
+  if file_path and file_path ~= "" then
+    local filename = file_path:match("([^/\\]+)$") or file_path
+    local parsed = utils.extract_info_from_filename(filename)
+    if parsed and type(parsed.episode) == "number" then
+      return parsed.episode
+    end
   end
   return nil
 end
 
-local function construct_episode_match(episode_id, opts)
-  if sync_context and sync_context.construct_episode_match then
-    return sync_context.construct_episode_match(episode_id, opts)
+local function resolve_episode_no(file_path, episode_id)
+  local current_ep = CurrentEpisodeInfo and CurrentEpisodeInfo.episodeEp or nil
+  if type(current_ep) == "number" and current_ep > 0 then
+    return current_ep
+  end
+
+  local current_episode_id = CurrentEpisodeInfo and tonumber(CurrentEpisodeInfo.episodeId) or nil
+  if current_episode_id then
+    return current_episode_id % 10000
+  end
+
+  if episode_id then
+    return tonumber(episode_id) % 10000
+  end
+
+  return extract_episode_no_from_filename(file_path)
+end
+
+local function resolve_runtime_episode_id(file_path, bgm_id, db_record)
+  local manual_bgm_mode = db_record
+    and db_record.manual == true
+    and tonumber(db_record.bgm_id)
+    and tonumber(bgm_id)
+    and tonumber(db_record.bgm_id) == tonumber(bgm_id)
+  if manual_bgm_mode then
+    local ep = extract_episode_no_from_filename(file_path)
+    if not ep then
+      return nil, nil
+    end
+    return tonumber(bgm_id) * 10000 + ep, ep
+  end
+
+  local episode_id = db_record and db_record.dandanplay_id or nil
+  if not episode_id and CurrentEpisodeInfo and CurrentEpisodeInfo.episodeId then
+    episode_id = tonumber(CurrentEpisodeInfo.episodeId)
+  end
+  local ep = resolve_episode_no(file_path, episode_id)
+  if not episode_id and bgm_id and ep then
+    episode_id = tonumber(bgm_id) * 10000 + ep
+  end
+  return episode_id, ep
+end
+
+
+local function get_user_episodes_cached(episode_id, bgm_id, opts)
+  if sync_context and sync_context.get_user_episodes_cached then
+    return sync_context.get_user_episodes_cached(episode_id, bgm_id, opts)
   end
   return nil
 end
@@ -141,15 +189,16 @@ function M.fetch_episodes(opts, anime_info)
   end
   local file_path = get_current_file_path()
   local db_record = file_path and db.get({path = file_path}) or nil
+  local runtime_episode_id = resolve_runtime_episode_id(file_path, info.bgm_id, db_record)
 
-  if not db_record or not db_record.bgm_id or not db_record.dandanplay_id then
-    mp.msg.error("无法获取Bangumi ID和Dandanplay ID")
+  if not runtime_episode_id then
+    mp.msg.error("无法定位当前集，刷新剧集失败")
     return utils.subprocess_err()
   end
 
   local episodes = get_user_episodes_cached(
-    db_record.dandanplay_id,
-    db_record.bgm_id,
+    runtime_episode_id,
+    info.bgm_id,
     {force_refresh = force_refresh}
   )
   if not episodes then
@@ -190,25 +239,32 @@ function M.update_episode(opts)
   local file_path = mp.get_property("path")
   file_path = mp.command_native({"normalize-path", file_path})
   local db_record = db.get({path = file_path})
-  
-  if not db_record or not db_record.bgm_id or not db_record.dandanplay_id then
-    mp.msg.error("无法获取Bangumi ID和Dandanplay ID")
+  local manual_bgm_mode = db_record
+    and db_record.manual == true
+    and tonumber(db_record.bgm_id)
+    and tonumber(info.bgm_id)
+    and tonumber(db_record.bgm_id) == tonumber(info.bgm_id)
+
+  local episode_id, ep = resolve_runtime_episode_id(file_path, info.bgm_id, db_record)
+  if not episode_id or not ep then
+    mp.msg.error("无法定位当前集")
     return utils.subprocess_err()
   end
-  
-  local episode_id = db_record.dandanplay_id
-  local ep = episode_id % 10000
-  
+
   local episodes_path = db.get_path(episode_id, "episodes")
   local file = io.open(episodes_path, "r")
+  local episodes_data = nil
   if not file then
-    mp.msg.error("剧集文件不存在: " .. episodes_path)
-    return utils.subprocess_err()
+    episodes_data = get_user_episodes_cached(episode_id, info.bgm_id, {force_refresh = true})
+    if not episodes_data then
+      mp.msg.error("剧集文件不存在且拉取失败: " .. episodes_path)
+      return utils.subprocess_err()
+    end
+  else
+    local content = file:read("*all")
+    file:close()
+    episodes_data = mp_utils.parse_json(content)
   end
-  
-  local content = file:read("*all")
-  file:close()
-  local episodes_data = mp_utils.parse_json(content)
   
   if not episodes_data or not episodes_data.data then
     mp.msg.error("无法解析剧集文件")
@@ -218,6 +274,7 @@ function M.update_episode(opts)
   local episodes = episodes_data.data
   local bgm_episode_id = nil
   local episode = nil
+  local match_result = nil
   local function mark_episode_watched(ep_info)
     if not ep_info then
       return false
@@ -240,48 +297,80 @@ function M.update_episode(opts)
     end
   end
   
-  if ep > 1000 then
-    -- 特殊集，通过标题匹配
-    local episode_info = construct_episode_match(episode_id)
-    if not episode_info then
-      mp.msg.error("无法匹配剧集信息")
-      return utils.subprocess_err()
+  if not manual_bgm_mode then
+    local direct_bgm_episode_id = CurrentEpisodeInfo and tonumber(CurrentEpisodeInfo.bgmEpisodeId) or nil
+    if direct_bgm_episode_id then
+      bgm_episode_id = direct_bgm_episode_id
+      for _, ep_info in ipairs(episodes) do
+        if ep_info.episode and tonumber(ep_info.episode.id) == bgm_episode_id then
+          episode = ep_info
+          break
+        end
+      end
     end
-    
-    local title = episode_info.episodeTitle
+  end
+
+  if not bgm_episode_id then
+    match_result = episode_matcher.match_by_number(episodes, ep)
+    local matched = match_result and match_result.target or nil
+    if matched and matched.episode then
+      episode = matched
+      bgm_episode_id = matched.episode.id
+    end
+  end
+  if manual_bgm_mode then
+    mp.msg.verbose(
+      string.format(
+        "bangumi_service: manual_bgm 匹配 mode=%s reason=%s parsed_no=%s max_main_ep=%s",
+        tostring(match_result and match_result.mode),
+        tostring(match_result and match_result.reason),
+        tostring(ep),
+        tostring(match_result and match_result.stats and match_result.stats.max_main_ep)
+      )
+    )
+    if match_result and match_result.reason == "sort_fallback_parsed_gt_max_ep" then
+      mp.msg.verbose("bangumi_service: 检测到累计编号映射，已使用 sort 兜底")
+    end
+  end
+
+  if not bgm_episode_id and not manual_bgm_mode then
+    local title = CurrentEpisodeInfo and CurrentEpisodeInfo.episodeTitle or ""
     local max_conf = 0
-    local max_idx = 1
-    
+    local max_idx = nil
+
     for i, ep_info in ipairs(episodes) do
-      local conf1 = utils.fuzzy_match_title(title, ep_info.episode.name or "")
-      local conf2 = utils.fuzzy_match_title(title, ep_info.episode.name_cn or "")
-      local conf = math.max(conf1, conf2)
+      local ep_name = ep_info.episode and ep_info.episode.name or ""
+      local ep_name_cn = ep_info.episode and ep_info.episode.name_cn or ""
+      local conf = math.max(
+        utils.fuzzy_match_title(title, ep_name),
+        utils.fuzzy_match_title(title, ep_name_cn)
+      )
       if conf > max_conf then
         max_conf = conf
         max_idx = i
       end
     end
-    
-    if max_conf < 0.8 then
-      mp.msg.error("无法匹配剧集标题，相似度: " .. max_conf)
-      return utils.subprocess_err()
-    end
-    
-    episode = episodes[max_idx]
-    bgm_episode_id = episode.episode.id
-  else
-    -- 普通集，通过集数匹配
-    for _, ep_info in ipairs(episodes) do
-      if ep_info.episode.ep == ep then
-        episode = ep_info
-        bgm_episode_id = episode.episode.id
-        break
-      end
+
+    if max_idx and max_conf >= 0.8 then
+      episode = episodes[max_idx]
+      bgm_episode_id = episode and episode.episode and episode.episode.id or nil
     end
   end
   
   if not bgm_episode_id then
-    mp.msg.error("无法找到对应的剧集")
+    if manual_bgm_mode then
+      mp.msg.error(
+        string.format(
+          "无法找到对应的剧集: parsed_no=%s max_main_ep=%s mode=%s reason=%s",
+          tostring(ep),
+          tostring(match_result and match_result.stats and match_result.stats.max_main_ep),
+          tostring(match_result and match_result.mode),
+          tostring(match_result and match_result.reason)
+        )
+      )
+    else
+      mp.msg.error("无法找到对应的剧集，请手动匹配修正")
+    end
     return utils.subprocess_err()
   end
 

@@ -141,8 +141,234 @@ local function trim(s)
   return s:match("^%s*(.-)%s*$")
 end
 
+local NOISE_TAGS = {
+  ["aac"] = true,
+  ["ac3"] = true,
+  ["av1"] = true,
+  ["bd"] = true,
+  ["bdrip"] = true,
+  ["baha"] = true,
+  ["bits"] = true,
+  ["ddp5"] = true,
+  ["flac"] = true,
+  ["h264"] = true,
+  ["h265"] = true,
+  ["hevc"] = true,
+  ["webrip"] = true,
+  ["webdl"] = true,
+  ["web-dl"] = true,
+  ["x264"] = true,
+  ["x265"] = true,
+}
+
+local function normalize_brackets(text)
+  if not text then
+    return nil
+  end
+  return text
+    :gsub("（", "(")
+    :gsub("）", ")")
+    :gsub("【", "[")
+    :gsub("】", "]")
+end
+
+local function normalize_episode_number(ep_text, allow_large)
+  local ep = tonumber(ep_text)
+  if not ep then
+    return nil
+  end
+  ep = math.floor(ep)
+  if ep <= 0 then
+    return nil
+  end
+  if allow_large then
+    if ep > 10000 then
+      return nil
+    end
+  else
+    if ep > 500 then
+      return nil
+    end
+    if ep >= 1900 and ep <= 2099 then
+      return nil
+    end
+  end
+  return ep
+end
+
+local function is_noise_token(token)
+  if not token or token == "" then
+    return true
+  end
+  local t = token:lower()
+  t = t:gsub("^[%[%]%(%){}%+%-_%.]+", ""):gsub("[%[%]%(%){}%+%-_%.]+$", "")
+  if t == "" then
+    return true
+  end
+  if NOISE_TAGS[t] then
+    return true
+  end
+  if t:match("^%d%d%d?%d?[pPkK]$") then
+    return true
+  end
+  if t:match("^%d+[xX]%d+$") then
+    return true
+  end
+  if t:match("^10bit$") or t:match("^8bit$") then
+    return true
+  end
+  return false
+end
+
+local function split_tokens(text)
+  local tokens = {}
+  local normalized = text
+    :gsub("[_%.]", " ")
+    :gsub("　", " ")
+  for token in normalized:gmatch("%S+") do
+    tokens[#tokens + 1] = token
+  end
+  return tokens
+end
+
+local function segment_has_episode_hint(segment)
+  if not segment then
+    return false
+  end
+  if segment:match("第%s*%d+%s*[集话回話]") then
+    return true
+  end
+  if segment:match("[sS]%d+[%.%-%s_]*[eE][pP]?%d+") then
+    return true
+  end
+  if segment:match("[eE][pP]?%d+") then
+    return true
+  end
+  if segment:match("%d+%s*[xX]%s*%d+") then
+    return true
+  end
+  return false
+end
+
+local function segment_is_noise(segment)
+  if not segment or segment == "" then
+    return true
+  end
+  if segment_has_episode_hint(segment) then
+    return false
+  end
+  local inner = segment
+  local first = inner:sub(1, 1)
+  if first == "[" or first == "(" then
+    inner = inner:sub(2)
+  end
+  local last = inner:sub(-1)
+  if last == "]" or last == ")" then
+    inner = inner:sub(1, -2)
+  end
+  local tokens = split_tokens(inner)
+  if #tokens == 0 then
+    return true
+  end
+  for _, token in ipairs(tokens) do
+    if not is_noise_token(token) then
+      return false
+    end
+  end
+  return true
+end
+
+local function strip_noise_segments(text)
+  local stripped = normalize_brackets(text) or ""
+  stripped = stripped:gsub("%b[]", function(seg)
+    if segment_is_noise(seg) then
+      return " "
+    end
+    return seg
+  end)
+  stripped = stripped:gsub("%b()", function(seg)
+    if segment_is_noise(seg) then
+      return " "
+    end
+    return seg
+  end)
+  return stripped
+end
+
+local function extract_episode_from_text(text)
+  if not text or text == "" then
+    return nil
+  end
+
+  text = normalize_brackets(trim(text))
+  text = strip_noise_segments(text)
+  if text == "" then
+    return nil
+  end
+
+  local ep = normalize_episode_number(text:match("第%s*0*(%d+)%s*[集话回話]"), true)
+  if ep then
+    return ep
+  end
+
+  ep = normalize_episode_number(text:match("[sS]%d+[%.%-%s_]*[eE][pP]?%s*0*(%d+)"), true)
+  if ep then
+    return ep
+  end
+
+  local _, x_ep = text:match("(%d+)%s*[xX]%s*0*(%d+)")
+  ep = normalize_episode_number(x_ep, true)
+  if ep then
+    return ep
+  end
+
+  local tokens = split_tokens(text)
+  local tail_number = nil
+  for i, raw_token in ipairs(tokens) do
+    local token = raw_token:gsub("^[%({]+", ""):gsub("[%)}]+$", "")
+
+    ep = normalize_episode_number(token:match("^%[0*(%d+)%]$"), false)
+    if ep then
+      return ep
+    end
+
+    ep = normalize_episode_number(token:match("^%-0*(%d+)$"), false)
+    if ep then
+      return ep
+    end
+
+    ep = normalize_episode_number(token:match("^[eE][pP]?0*(%d+)[vV]?%d*$"), true)
+    if ep then
+      return ep
+    end
+
+    ep = normalize_episode_number(token:match("^0*(%d+)[集话回話]$"), true)
+    if ep then
+      return ep
+    end
+
+    local _, token_x_ep = token:match("^(%d+)[xX]0*(%d+)$")
+    ep = normalize_episode_number(token_x_ep, true)
+    if ep then
+      return ep
+    end
+
+    local pure_num = normalize_episode_number(token:match("^0*(%d+)$"), false)
+    if pure_num then
+      local prev = tokens[i - 1] and tokens[i - 1]:lower() or ""
+      if prev == "-" or prev == "#" then
+        return pure_num
+      end
+      tail_number = pure_num
+    end
+  end
+
+  return tail_number
+end
+
 -- 从文件名提取信息（番剧名、集数等）
 function M.extract_info_from_filename(filename)
+  filename = normalize_brackets(filename or "")
   -- 移除文件扩展名
   filename = filename:match("^(.+)%.[^%.]+$") or filename
   filename = trim(filename)
@@ -150,31 +376,25 @@ function M.extract_info_from_filename(filename)
   local tags = {}
   local title_parts = {}
   
-  -- 提取标签 [xxx] (xxx) （xxx）【xxx】第x话
-  local tag_pattern = "[%[%(%（【第](.-)[%]%）】话話]"
-  for tag in filename:gmatch(tag_pattern) do
-    table.insert(tags, trim(tag))
+  for seg in filename:gmatch("%b[]") do
+    tags[#tags + 1] = trim(seg:sub(2, -2))
   end
-  
+  for seg in filename:gmatch("%b()") do
+    tags[#tags + 1] = trim(seg:sub(2, -2))
+  end
+
   -- 移除标签后的剩余部分
-  local remaining = filename:gsub(tag_pattern, " ")
+  local remaining = filename:gsub("%b[]", " "):gsub("%b()", " ")
   for part in remaining:gmatch("%S+") do
     table.insert(title_parts, trim(part))
   end
   
   -- 从标签中提取集数
-  local episode = nil
+  local episode = extract_episode_from_text(filename)
   for _, tag in ipairs(tags) do
-    -- 匹配数字（如 "1", "12v2", "12end"）
-    local ep_match = tag:match("^(%d+)(v%d+)?(end)?$")
+    local ep_match = extract_episode_from_text(tag)
     if ep_match then
-      episode = tonumber(ep_match)
-      break
-    end
-    -- 匹配 ep_1, ep1 等
-    ep_match = tag:match("^ep_?(%d+)")
-    if ep_match then
-      episode = tonumber(ep_match)
+      episode = ep_match
       break
     end
   end
@@ -182,16 +402,19 @@ function M.extract_info_from_filename(filename)
   -- 如果标签中没有，从标题部分提取
   if not episode then
     for i, part in ipairs(title_parts) do
-      -- 匹配 -ep1-, -s1e1-, -1-, 1- 等
-      local ep_match = part:match("-?ep(%d+)-?") 
-        or part:match("-?s%d+e(%d+)-?")
-        or part:match("-?(%d+)(v%d+)?(end)?-?$")
-        or part:match("^(%d+)$")
+      local ep_match = extract_episode_from_text(part)
       
       if ep_match then
-        episode = tonumber(ep_match)
+        episode = ep_match
         -- 从标题部分移除集数
-        title_parts[i] = part:gsub("ep%d+", ""):gsub("s%d+e%d+", ""):gsub("%d+", "")
+        title_parts[i] = part
+          :gsub("第%s*%d+%s*[集话回話]", "")
+          :gsub("[sS]%d+[%.%-%s_]*[eE][pP]?%s*%d+", "")
+          :gsub("[eE][pP]?%s*%d+", "")
+          :gsub("%d+%s*[xX]%s*%d+", "")
+          :gsub("^%s*%[%d+%]%s*$", "")
+          :gsub("^%-+%s*%d+$", "")
+          :gsub("^%d+$", "")
         if trim(title_parts[i]) == "" then
           title_parts[i] = "-"
         end
@@ -205,7 +428,9 @@ function M.extract_info_from_filename(filename)
   for _, part in ipairs(title_parts) do
     local trimmed = trim(part)
     if part ~= "-" and trimmed ~= "" then
-      table.insert(cleaned_parts, trimmed)
+      if not is_noise_token(trimmed) then
+        table.insert(cleaned_parts, trimmed)
+      end
     end
   end
   

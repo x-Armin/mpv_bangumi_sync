@@ -39,6 +39,41 @@ function M.open_anime_search_menu(query)
   M.open_uosc_menu(menu_props)
 end
 
+function M.open_subject_search_menu(query)
+  local menu_props = {
+    type = "menu_bgm_subject",
+    title = "搜索Bangumi条目",
+    search_style = "palette",
+    search_debounce = "submit",
+    search_suggestion = query,
+    on_search = { "script-message-to", mp.get_script_name(), "bgm-search-subjects" },
+    footnote = "使用 enter 或 ctrl+enter 进行搜索",
+    items = {},
+  }
+  M.open_uosc_menu(menu_props)
+end
+
+function M.open_manual_match_source_menu()
+  local menu_props = {
+    type = "menu_bgm_manual_source",
+    title = "选择手动匹配来源",
+    search_style = "disabled",
+    items = {
+      {
+        title = "弹弹play搜索",
+        value = { "script-message-to", mp.get_script_name(), "bgm-open-dandan-search" },
+        selectable = true,
+      },
+      {
+        title = "Bangumi搜索修正",
+        value = { "script-message-to", mp.get_script_name(), "bgm-open-bgm-subject-search" },
+        selectable = true,
+      },
+    },
+  }
+  M.open_uosc_menu(menu_props)
+end
+
 function M.open_match_menu(matches)
   local items = {}
   for i, match in ipairs(matches or {}) do
@@ -50,8 +85,8 @@ function M.open_match_menu(matches)
     }
   end
   items[#items + 1] = {
-    title = "没有结果，手动搜索",
-    value = { "script-message-to", mp.get_script_name(), "bgm-open-search" },
+    title = "没有结果，手动匹配",
+    value = { "script-message-to", mp.get_script_name(), "bgm-open-search-source" },
     keep_open = false,
     selectable = true,
   }
