@@ -178,6 +178,14 @@ function M.update_episode(opts)
     mp.msg.error("未匹配到Bangumi ID，更新剧集失败")
     return utils.subprocess_err()
   end
+
+  local collection_update_message = nil
+  local collection_resp = M.update_bangumi_collection(info).execute()
+  if collection_resp and collection_resp.update_message then
+    collection_update_message = collection_resp.update_message
+  elseif not collection_resp then
+    mp.msg.warn("收藏状态检测失败，继续更新单集状态")
+  end
   
   local file_path = mp.get_property("path")
   file_path = mp.command_native({"normalize-path", file_path})
@@ -283,11 +291,23 @@ function M.update_episode(opts)
     queue_pending_episode(info.bgm_id, bgm_episode_id)
     return {
       execute = function()
-        return {progress = ep, total = #episodes, deferred = true, episodes_data = episodes_data}
+        return {
+          progress = ep,
+          total = #episodes,
+          deferred = true,
+          episodes_data = episodes_data,
+          collection_update_message = collection_update_message,
+        }
       end,
       async = function(cb)
         if cb and cb.resp then
-          cb.resp({progress = ep, total = #episodes, deferred = true, episodes_data = episodes_data})
+          cb.resp({
+            progress = ep,
+            total = #episodes,
+            deferred = true,
+            episodes_data = episodes_data,
+            collection_update_message = collection_update_message,
+          })
         end
       end,
     }
@@ -300,11 +320,23 @@ function M.update_episode(opts)
     persist_episodes_if_needed(changed)
     return {
       execute = function()
-        return {progress = ep, total = #episodes, skipped = true, episodes_data = episodes_data}
+        return {
+          progress = ep,
+          total = #episodes,
+          skipped = true,
+          episodes_data = episodes_data,
+          collection_update_message = collection_update_message,
+        }
       end,
       async = function(cb)
         if cb and cb.resp then
-          cb.resp({progress = ep, total = #episodes, skipped = true, episodes_data = episodes_data})
+          cb.resp({
+            progress = ep,
+            total = #episodes,
+            skipped = true,
+            episodes_data = episodes_data,
+            collection_update_message = collection_update_message,
+          })
         end
       end,
     }
@@ -322,11 +354,21 @@ function M.update_episode(opts)
 
   return {
     execute = function()
-      return {progress = ep, total = #episodes, episodes_data = episodes_data}
+      return {
+        progress = ep,
+        total = #episodes,
+        episodes_data = episodes_data,
+        collection_update_message = collection_update_message,
+      }
     end,
     async = function(cb)
       if cb and cb.resp then
-        cb.resp({progress = ep, total = #episodes, episodes_data = episodes_data})
+        cb.resp({
+          progress = ep,
+          total = #episodes,
+          episodes_data = episodes_data,
+          collection_update_message = collection_update_message,
+        })
       end
     end,
   }

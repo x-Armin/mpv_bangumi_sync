@@ -17,7 +17,6 @@ CurrentEpisodeInfo = nil
 EpisodeStatusText = "未获取"
 EpisodeProgressText = "未获取"
 UpdateEpisodeTimer = nil
-BangumiCollectionReady = false
 EpisodesReady = false
 MatchResults = nil
 UoscAvailable = false
@@ -48,9 +47,15 @@ local function reset_globals()
     UpdateEpisodeTimer:kill()
     UpdateEpisodeTimer = nil
   end
-  BangumiCollectionReady = false
   EpisodesReady = false
   MatchResults = nil
+end
+
+local function compose_sync_message(collection_update_message, sync_message)
+  if collection_update_message and collection_update_message ~= "" then
+    return collection_update_message .. "\n" .. sync_message
+  end
+  return sync_message
 end
 
 local function update_episode_status_from_cache(episodes_data)
@@ -69,20 +74,6 @@ local function update_episode_status_from_cache(episodes_data)
 end
 
 local function init_after_bangumi_id()
-  bangumi_service.update_bangumi_collection().async {
-    resp = function(resp)
-      if resp.update_message then
-        mp.osd_message(resp.update_message, 3)
-        mp.msg.info("Bangumi 收藏状态更新成功:", resp.update_message)
-      else
-        mp.msg.verbose "收藏状态未改变"
-      end
-      BangumiCollectionReady = true
-    end,
-    err = function(err)
-      mp.msg.error("更新Bangumi条目失败:", err)
-    end,
-  }
   UpdateEpisodeTimer = mp.add_periodic_timer(5, function()
     local current_time = mp.get_property_number "time-pos"
     local total_time = mp.get_property_number "duration"
@@ -94,8 +85,8 @@ local function init_after_bangumi_id()
     if ratio < threshold then
       return
     end
-    if not (BangumiCollectionReady and EpisodesReady) then
-      mp.msg.verbose "Bangumi 收藏或剧集未更新或更新失败，跳过更新"
+    if not EpisodesReady then
+      mp.msg.verbose "Bangumi 剧集未更新或更新失败，跳过更新"
       return
     end
     if UpdateEpisodeTimer then
@@ -103,19 +94,24 @@ local function init_after_bangumi_id()
       UpdateEpisodeTimer = nil
       bangumi_service.update_episode({defer = (SyncMode == "old"), anime_info = AnimeInfo}).async {
         resp = function(data)
+          data = data or {}
           local updated = update_episode_status_from_cache(data and data.episodes_data or nil)
           if updated then
             EpisodesReady = true
           end
+          local collection_update_message = data.collection_update_message
           if data.deferred then
-            mp.msg.info("补番：已加入待批量同步列表")
-            mp.osd_message("补番：已加入待批量同步列表", 3)
+            local message = compose_sync_message(collection_update_message, "补番：已加入待批量同步列表")
+            mp.msg.info(message:gsub("\n", " | "))
+            mp.osd_message(message, 3)
           elseif data.skipped then
-            mp.msg.info "同步Bangumi追番记录进度成功（无需更新）"
-            mp.osd_message("同步Bangumi追番记录进度成功（无需更新）")
+            local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度成功（无需更新）")
+            mp.msg.info(message:gsub("\n", " | "))
+            mp.osd_message(message)
           else
-            mp.msg.info "同步Bangumi追番记录进度成功"
-            mp.osd_message("同步Bangumi追番记录进度成功")
+            local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度成功")
+            mp.msg.info(message:gsub("\n", " | "))
+            mp.osd_message(message)
             EpisodeStatusText = "已看"
           end
         end,
