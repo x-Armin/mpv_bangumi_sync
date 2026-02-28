@@ -12,12 +12,16 @@ Options = {
   -- Windows用分号分隔多个目录，Linux/Mac用冒号分隔
   old_ani_storages = "",
 
+  -- 自动点格子（开启/禁用）
+  enable_auto_mark = true,
+
   -- 观看进度达到该比例时标记为“已看”（0~1）
   progress_mark_threshold = 0.9,
   batch_sync_threshold = 4,
 }
 
-opt.read_options(Options, mp.get_script_name(), function() end)
+local listeners = {}
+local public_config = {}
 
 local function normalize_string(value, default_value)
   if value == nil then
@@ -31,6 +35,28 @@ local function normalize_string(value, default_value)
     return default_value
   end
   return value
+end
+
+local function normalize_boolean(value, default_value)
+  if value == nil then
+    return default_value
+  end
+  if type(value) == "boolean" then
+    return value
+  end
+  if type(value) == "number" then
+    return value ~= 0
+  end
+  if type(value) == "string" then
+    local lowered = value:lower()
+    if lowered == "yes" or lowered == "true" or lowered == "1" or lowered == "on" then
+      return true
+    end
+    if lowered == "no" or lowered == "false" or lowered == "0" or lowered == "off" then
+      return false
+    end
+  end
+  return default_value
 end
 
 local function clamp_progress_threshold(value, default_value)
@@ -90,41 +116,66 @@ local function merge_storages(primary, extra)
   return merged
 end
 
--- 处理配置
-Options.bgm_access_token = normalize_string(Options.bgm_access_token, "")
-Options.storages = normalize_string(Options.storages, "")
-Options.old_ani_storages = normalize_string(Options.old_ani_storages, "")
-Options.storages_list = parse_storages(Options.storages)
-Options.old_ani_storages_list = parse_storages(Options.old_ani_storages)
-Options.all_storages_list = merge_storages(
-  Options.storages_list,
-  Options.old_ani_storages_list
-)
-Options.progress_mark_threshold = clamp_progress_threshold(
-  Options.progress_mark_threshold,
-  0.9
-)
-Options.batch_sync_threshold = clamp_batch_threshold(
-  Options.batch_sync_threshold,
-  4
-)
+local function apply_options()
+  Options.bgm_access_token = normalize_string(Options.bgm_access_token, "")
+  Options.storages = normalize_string(Options.storages, "")
+  Options.old_ani_storages = normalize_string(Options.old_ani_storages, "")
+  Options.enable_auto_mark = normalize_boolean(Options.enable_auto_mark, true)
+  Options.storages_list = parse_storages(Options.storages)
+  Options.old_ani_storages_list = parse_storages(Options.old_ani_storages)
+  Options.all_storages_list = merge_storages(
+    Options.storages_list,
+    Options.old_ani_storages_list
+  )
+  Options.progress_mark_threshold = clamp_progress_threshold(
+    Options.progress_mark_threshold,
+    0.9
+  )
+  Options.batch_sync_threshold = clamp_batch_threshold(
+    Options.batch_sync_threshold,
+    4
+  )
 
--- 如果没有设置access_token，尝试从环境变量读取
-if not Options.bgm_access_token or Options.bgm_access_token == "" then
-  Options.bgm_access_token = os.getenv("BGM_ACCESS_TOKEN") or ""
+  -- 如果没有设置access_token，尝试从环境变量读取
+  if not Options.bgm_access_token or Options.bgm_access_token == "" then
+    Options.bgm_access_token = os.getenv("BGM_ACCESS_TOKEN") or ""
+  end
+
+  public_config.access_token = Options.bgm_access_token
+  public_config.storages = Options.all_storages_list
+  public_config.new_storages = Options.storages_list
+  public_config.old_ani_storages = Options.old_ani_storages_list
 end
+
+local function notify_options_changed()
+  for _, cb in ipairs(listeners) do
+    local ok, err = pcall(cb, Options)
+    if not ok then
+      mp.msg.error("config listener error: " .. tostring(err))
+    end
+  end
+end
+
+opt.read_options(Options, mp.get_script_name(), function()
+  apply_options()
+  notify_options_changed()
+end)
+
+apply_options()
 
 
 local M = {}
 
 -- 配置对象
-M.config = {
-  access_token = Options.bgm_access_token,
-  storages = Options.all_storages_list,
-  new_storages = Options.storages_list,
-  old_ani_storages = Options.old_ani_storages_list,
-}
+M.config = public_config
 
 M.options = Options
+
+function M.on_options_changed(cb)
+  if type(cb) ~= "function" then
+    return
+  end
+  listeners[#listeners + 1] = cb
+end
 
 return M

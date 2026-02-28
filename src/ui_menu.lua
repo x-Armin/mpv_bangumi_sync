@@ -65,7 +65,7 @@ function M.open_manual_match_source_menu()
         selectable = true,
       },
       {
-        title = "Bangumi搜索修正",
+        title = "Bangumi搜索",
         value = { "script-message-to", mp.get_script_name(), "bgm-open-bgm-subject-search" },
         selectable = true,
       },
@@ -103,6 +103,8 @@ local function build_info_menu_props(state)
   local CurrentEpisodeInfo = state.CurrentEpisodeInfo
   local EpisodeStatusText = state.EpisodeStatusText
   local EpisodeProgressText = state.EpisodeProgressText
+  local AutoMarkText = state.AutoMarkText or "开启"
+  local AutoMarkIcon = (AutoMarkText == "开启") and "toggle_on" or "toggle_off"
   local title_guess_mod = title_guess
 
   local title = (CurrentEpisodeInfo and CurrentEpisodeInfo.animeTitle) or title_guess_mod.get_default_search_query() or "未获取"
@@ -144,6 +146,12 @@ local function build_info_menu_props(state)
         { name = "refresh", icon = "refresh", label = "根据当前匹配的番剧Id，重新获取单集信息" },
       },
       actions_place = "inside" },
+    -- {
+    --   title = "自动点格子",
+    --   icon = AutoMarkIcon,
+    --   value = { "script-message-to", mp.get_script_name(), "bgm-toggle-auto-mark" },
+    --   selectable = true,
+    --   keep_open = true },
     {
       title = "打开Bangumi",
       value = { "script-message", "open-bangumi-url" },

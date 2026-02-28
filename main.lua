@@ -1,5 +1,5 @@
 -- mpv_bangumi_sync v1.0.0
-require "src.config"
+local config = require "src.config"
 local sync_context = require "src.services.sync_context"
 local bangumi_service = require "src.services.bangumi_service"
 local dandanplay_service = require "src.services.dandanplay_service"
@@ -22,6 +22,13 @@ EpisodesReady = false
 MatchResults = nil
 UoscAvailable = false
 SyncMode = "new"
+AutoMarkEnabled = Options.enable_auto_mark ~= false
+AutoMarkText = AutoMarkEnabled and "开启" or "禁用"
+CurrentEpisodeWatched = false
+local flush_pending_updates
+local compose_sync_message
+local update_episode_status_from_cache
+local reconcile_update_timer
 
 local function prune_db_on_start()
   local removed = db.prune({max_age_days = 30, remove_missing = false})
@@ -43,6 +50,7 @@ local function reset_globals()
   CurrentEpisodeInfo = nil
   EpisodeStatusText = "未获取"
   EpisodeProgressText = "未获取"
+  CurrentEpisodeWatched = false
   SyncMode = "new"
   if UpdateEpisodeTimer then
     UpdateEpisodeTimer:kill()
@@ -50,6 +58,116 @@ local function reset_globals()
   end
   EpisodesReady = false
   MatchResults = nil
+end
+
+local function resolve_auto_mark_enabled()
+  return Options.enable_auto_mark ~= false
+end
+
+local function update_auto_mark_text()
+  AutoMarkText = AutoMarkEnabled and "开启" or "禁用"
+end
+
+local function log_auto_mark_mode()
+  if AutoMarkEnabled then
+    mp.msg.info("自动点格子：开启")
+  else
+    mp.msg.info("自动点格子：禁用（仅展示，不同步）")
+  end
+end
+
+local function stop_update_timer(reason)
+  if UpdateEpisodeTimer then
+    UpdateEpisodeTimer:kill()
+    UpdateEpisodeTimer = nil
+    if reason and reason ~= "" then
+      mp.msg.verbose("停止进度检测定时器: " .. reason)
+    end
+  end
+end
+
+local function should_start_update_timer()
+  return AutoMarkEnabled
+    and EpisodesReady
+    and not CurrentEpisodeWatched
+    and AnimeInfo ~= nil
+end
+
+local function start_update_timer_if_needed()
+  if UpdateEpisodeTimer then
+    return
+  end
+  if not should_start_update_timer() then
+    return
+  end
+
+  UpdateEpisodeTimer = mp.add_periodic_timer(5, function()
+    if not AutoMarkEnabled then
+      stop_update_timer("自动点格子已禁用")
+      return
+    end
+    if CurrentEpisodeWatched then
+      stop_update_timer("当前集已看过")
+      return
+    end
+    if not EpisodesReady then
+      mp.msg.verbose("Bangumi 剧集未更新或更新失败，跳过更新")
+      return
+    end
+
+    local current_time = mp.get_property_number("time-pos")
+    local total_time = mp.get_property_number("duration")
+    if not current_time or not total_time then
+      return
+    end
+    local ratio = current_time / total_time
+    local threshold = Options.progress_mark_threshold or 0.9
+    if ratio < threshold then
+      return
+    end
+
+    stop_update_timer("到达进度阈值，开始同步")
+    bangumi_service.update_episode({defer = (SyncMode == "old"), anime_info = AnimeInfo}).async {
+      resp = function(data)
+        data = data or {}
+        local updated = update_episode_status_from_cache(data and data.episodes_data or nil)
+        if updated then
+          EpisodesReady = true
+        end
+        local collection_update_message = data.collection_update_message
+        if data.deferred then
+          local message = compose_sync_message(collection_update_message, "补番：已加入待批量同步列表")
+          mp.msg.info(message:gsub("\n", " | "))
+          mp.osd_message(message, 3)
+        elseif data.disabled then
+          mp.msg.verbose("自动点格子已禁用，跳过同步")
+        elseif data.skipped then
+          local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度成功（无需更新）")
+          mp.msg.info(message:gsub("\n", " | "))
+          mp.osd_message(message)
+        else
+          local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度成功")
+          mp.msg.info(message:gsub("\n", " | "))
+          mp.osd_message(message)
+          EpisodeStatusText = "已看"
+          CurrentEpisodeWatched = true
+        end
+        reconcile_update_timer()
+      end,
+      err = function(err)
+        mp.msg.error("更新当前集信息失败:", err)
+        mp.osd_message("同步Bangumi追番记录进度失败", 3)
+      end,
+    }
+  end)
+end
+
+reconcile_update_timer = function()
+  if should_start_update_timer() then
+    start_update_timer_if_needed()
+    return
+  end
+  stop_update_timer("当前模式无需进度检测")
 end
 
 local function get_current_file_path()
@@ -76,7 +194,7 @@ local function resolve_runtime_episode_id(bgm_id)
   return tonumber(bgm_id) * 10000 + parsed.episode
 end
 
-local function compose_sync_message(collection_update_message, sync_message)
+compose_sync_message = function(collection_update_message, sync_message)
   if collection_update_message and collection_update_message ~= "" then
     return collection_update_message .. "\n" .. sync_message
   end
@@ -102,73 +220,21 @@ local function log_context_loaded_summary()
   )
 end
 
-local function update_episode_status_from_cache(episodes_data)
+update_episode_status_from_cache = function(episodes_data)
   local result = episode_status.compute(CurrentEpisodeInfo, episodes_data)
   if not result then
+    CurrentEpisodeWatched = false
     return false
   end
 
   local progress = result.progress or {}
   EpisodeProgressText = string.format("%d / %d", progress.watched or 0, progress.total or 0)
   EpisodeStatusText = episode_status.map_status(result.status_value)
+  CurrentEpisodeWatched = tonumber(result.status_value) == 2
   if result.episode_info then
     CurrentEpisodeInfo = result.episode_info
   end
   return true
-end
-
-local function init_after_bangumi_id()
-  UpdateEpisodeTimer = mp.add_periodic_timer(5, function()
-    local current_time = mp.get_property_number "time-pos"
-    local total_time = mp.get_property_number "duration"
-    if not current_time or not total_time then
-      return
-    end
-    local ratio = current_time / total_time
-    local threshold = Options.progress_mark_threshold or 0.9
-    if ratio < threshold then
-      return
-    end
-    if not EpisodesReady then
-      mp.msg.verbose "Bangumi 剧集未更新或更新失败，跳过更新"
-      return
-    end
-    if UpdateEpisodeTimer then
-      UpdateEpisodeTimer:kill()
-      UpdateEpisodeTimer = nil
-      bangumi_service.update_episode({defer = (SyncMode == "old"), anime_info = AnimeInfo}).async {
-        resp = function(data)
-          data = data or {}
-          local updated = update_episode_status_from_cache(data and data.episodes_data or nil)
-          if updated then
-            EpisodesReady = true
-          end
-          local collection_update_message = data.collection_update_message
-          if data.deferred then
-            local message = compose_sync_message(collection_update_message, "补番：已加入待批量同步列表")
-            mp.msg.info(message:gsub("\n", " | "))
-            mp.osd_message(message, 3)
-          elseif data.skipped then
-            local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度成功（无需更新）")
-            mp.msg.info(message:gsub("\n", " | "))
-            mp.osd_message(message)
-          else
-            local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度成功")
-            mp.msg.info(message:gsub("\n", " | "))
-            mp.osd_message(message)
-            EpisodeStatusText = "已看"
-          end
-        end,
-        err = function(err)
-          mp.msg.error("更新当前集信息失败:", err)
-          mp.osd_message("同步Bangumi追番记录进度失败", 3)
-        end,
-      }
-    else
-      mp.msg.error "Unexpected value: UpdateEpisodeTimer = nil"
-      return
-    end
-  end)
 end
 
 local function init(episode_id, opts)
@@ -209,8 +275,8 @@ local function init(episode_id, opts)
         AnimeInfo.bgm_url
       )
       log_context_loaded_summary()
-      init_after_bangumi_id()
-    end,
+        reconcile_update_timer()
+      end,
     err = function(err)
       if err and err.error == "VideoPathError" then
     if err.reason == "NotInStorage" then
@@ -247,6 +313,56 @@ local function bind_manual_bgm_and_reload(bgm_id)
   return true, nil
 end
 
+flush_pending_updates = function(reason, opts)
+  local results = bangumi_service.flush_pending(opts)
+  if results and #results > 0 then
+    mp.msg.info(string.format("Batch synced episodes: %d", #results))
+  end
+end
+
+local function update_info_menu_view()
+  ui_menu.update_info_menu({
+    UoscAvailable = UoscAvailable,
+    CurrentEpisodeInfo = CurrentEpisodeInfo,
+    EpisodeStatusText = EpisodeStatusText,
+    EpisodeProgressText = EpisodeProgressText,
+    AutoMarkText = AutoMarkText,
+  })
+end
+
+local function apply_auto_mark_mode(opts)
+  opts = opts or {}
+  local previous = AutoMarkEnabled
+  AutoMarkEnabled = resolve_auto_mark_enabled()
+  update_auto_mark_text()
+
+  if opts.force_log or previous == nil or previous ~= AutoMarkEnabled then
+    log_auto_mark_mode()
+  end
+
+  if previous == true and AutoMarkEnabled == false then
+    flush_pending_updates("auto-mark-disabled", {force = true, detach = false})
+    stop_update_timer("自动点格子已禁用")
+  elseif previous == false and AutoMarkEnabled == true then
+    reconcile_update_timer()
+  elseif not AutoMarkEnabled then
+    stop_update_timer("自动点格子已禁用")
+  end
+
+  update_info_menu_view()
+end
+
+local function toggle_auto_mark_from_panel()
+  Options.enable_auto_mark = not AutoMarkEnabled
+  apply_auto_mark_mode({force_log = true})
+  mp.osd_message("自动点格子：" .. AutoMarkText, 2)
+end
+
+config.on_options_changed(function()
+  apply_auto_mark_mode()
+end)
+apply_auto_mark_mode({force_log = true})
+
 mp.register_event("file-loaded", function()
   if utils.is_protocol(mp.get_property "path") then
     mp.msg.verbose("Skipping init for protocol:", mp.get_property "path")
@@ -254,13 +370,6 @@ mp.register_event("file-loaded", function()
   end
   init()
 end)
-
-local function flush_pending_updates(reason, opts)
-  local results = bangumi_service.flush_pending(opts)
-  if results and #results > 0 then
-    mp.msg.info(string.format("Batch synced episodes: %d", #results))
-  end
-end
 
 
 mp.register_event("end-file", function(event)
@@ -307,7 +416,12 @@ mp.register_script_message("open-bangumi-info", function()
     CurrentEpisodeInfo = CurrentEpisodeInfo,
     EpisodeStatusText = EpisodeStatusText,
     EpisodeProgressText = EpisodeProgressText,
+    AutoMarkText = AutoMarkText,
   })
+end)
+
+mp.register_script_message("bgm-toggle-auto-mark", function()
+  toggle_auto_mark_from_panel()
 end)
 
 mp.register_script_message("bgm-noop", function() end)
@@ -352,16 +466,11 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
     if updated then
       EpisodesReady = true
     end
-    ui_menu.update_info_menu({
-      UoscAvailable = UoscAvailable,
-      CurrentEpisodeInfo = CurrentEpisodeInfo,
-      EpisodeStatusText = EpisodeStatusText,
-      EpisodeProgressText = EpisodeProgressText,
-    })
+    reconcile_update_timer()
+    update_info_menu_view()
     mp.osd_message("已刷新", 2)
     return
   end
-
   if event.action then
     return
   end
@@ -795,7 +904,7 @@ mp.register_script_message("manual-match", function()
     input.terminate()
     input.select {
       prompt = "请选择手动匹配来源：",
-      items = { "弹弹play搜索", "Bangumi搜索修正" },
+      items = { "弹弹play搜索", "Bangumi搜索" },
       submit = function(idx)
         if idx == 1 then
           start_dandan_search()

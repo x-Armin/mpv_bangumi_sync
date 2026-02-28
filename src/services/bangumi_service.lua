@@ -10,6 +10,11 @@ local M = {}
 
 local pending_episode_ids = {}
 
+local function is_auto_mark_enabled()
+  local opts = config and config.options or {}
+  return opts.enable_auto_mark ~= false
+end
+
 local function get_batch_sync_threshold()
   local opts = config and config.options or {}
   local threshold = tonumber(opts.batch_sync_threshold) or 0
@@ -42,6 +47,11 @@ local function queue_pending_episode(subject_id, episode_id)
 end
 
 function M.flush_pending(opts)
+  opts = opts or {}
+  if not is_auto_mark_enabled() and opts.force ~= true then
+    return {}
+  end
+
   local results = {}
   for subject_id, set in pairs(pending_episode_ids) do
     local ids = {}
@@ -221,6 +231,19 @@ end
 -- 更新剧集状态
 function M.update_episode(opts)
   opts = opts or {}
+  if not is_auto_mark_enabled() then
+    return {
+      execute = function()
+        return {disabled = true, skipped = true}
+      end,
+      async = function(cb)
+        if cb and cb.resp then
+          cb.resp({disabled = true, skipped = true})
+        end
+      end,
+    }
+  end
+
   local info = opts.anime_info or AnimeInfo
   local defer = opts.defer == true
   if not info or not info.bgm_id then
