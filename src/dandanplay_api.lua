@@ -4,8 +4,8 @@ local M = {}
 
 local BASE_API = "https://api.dandanplay.net/api/v2/"
 
-local appid_enc = "43ee637dcf24b626fcb6"
-local secret_enc = "02ec7f1fdb38bd75e28cd8fdc4cb9eb6ae04ac574de37e33dd74543e22a01439"
+local appid_enc = "00fe3838c677af24ede9"
+local secret_enc = "03c95633c0158054fab5d8ddf5cf92aba62ea23f5dd5713c9053481e66872422"
 
 -- 生成SHA256签名 (返回Hex字符串)
 local function sha256(data)

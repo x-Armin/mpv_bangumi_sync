@@ -328,6 +328,164 @@ local function get_subject_cached(bgm_id, episode_id, opts)
   return res.body
 end
 
+local function normalize_search_title(title)
+  if not title then
+    return nil
+  end
+  local normalized = tostring(title):match("^%s*(.-)%s*$")
+  if not normalized or normalized == "" then
+    return nil
+  end
+  normalized = normalized:lower()
+  normalized = normalized:gsub("[%s%p_%-]+", "")
+  normalized = normalized:gsub("　", "")
+  return normalized ~= "" and normalized or nil
+end
+
+local function append_unique_title(list, seen, value)
+  value = value and tostring(value):match("^%s*(.-)%s*$") or nil
+  if not value or value == "" or seen[value] then
+    return
+  end
+  seen[value] = true
+  list[#list + 1] = value
+end
+
+local function collect_search_titles(anime_info)
+  local titles = {}
+  local seen = {}
+
+  append_unique_title(titles, seen, anime_info and anime_info.searchKeyword)
+  append_unique_title(titles, seen, anime_info and anime_info.animeTitle)
+
+  for _, item in ipairs(anime_info and anime_info.titles or {}) do
+    append_unique_title(titles, seen, item and item.title)
+  end
+
+  return titles
+end
+
+local function resolve_bgm_id_from_online_databases(anime_info)
+  for _, item in ipairs(anime_info and anime_info.onlineDatabases or {}) do
+    local url = item and item.url or nil
+    local name = item and item.name or nil
+    local lower_name = name and tostring(name):lower() or ""
+    if url and (url:find("bgm.tv/subject/", 1, true) or lower_name:find("bangumi", 1, true)) then
+      local bgm_id = tonumber(url:match("/subject/(%d+)"))
+      if bgm_id then
+        return bgm_id, url, "online_databases"
+      end
+    end
+  end
+  return nil
+end
+
+local function resolve_bgm_id_from_search(anime_info)
+  local queries = collect_search_titles(anime_info)
+  if #queries == 0 then
+    return nil
+  end
+
+  local normalized_queries = {}
+  for _, query in ipairs(queries) do
+    local normalized = normalize_search_title(query)
+    if normalized then
+      normalized_queries[normalized] = true
+    end
+  end
+
+  local exact_matches = {}
+  local best = nil
+  local second = nil
+
+  for _, query in ipairs(queries) do
+    local res = bangumi_api.search_subjects(query, {limit = 10, type_filter = {2}})
+    if res and tonumber(res.status_code or 0) < 400 and res.body and res.body.data then
+      for index, item in ipairs(res.body.data) do
+        local names = {item.name_cn, item.name}
+        local exact = false
+        local score = 0
+
+        for _, candidate_name in ipairs(names) do
+          local normalized_name = normalize_search_title(candidate_name)
+          if normalized_name and normalized_queries[normalized_name] then
+            exact = true
+          end
+          score = math.max(score, utils.fuzzy_match_title(query, candidate_name or ""))
+        end
+
+        score = score - ((index - 1) * 0.01)
+
+        if exact then
+          exact_matches[item.id] = exact_matches[item.id] or {
+            id = item.id,
+            url = "https://bgm.tv/subject/" .. tostring(item.id),
+          }
+        end
+
+        if not best or score > best.score then
+          second = best
+          best = {
+            id = item.id,
+            url = "https://bgm.tv/subject/" .. tostring(item.id),
+            score = score,
+          }
+        elseif not second or score > second.score then
+          second = {
+            id = item.id,
+            url = "https://bgm.tv/subject/" .. tostring(item.id),
+            score = score,
+          }
+        end
+      end
+    end
+  end
+
+  local exact_count = 0
+  local exact_hit = nil
+  for _, item in pairs(exact_matches) do
+    exact_count = exact_count + 1
+    exact_hit = item
+  end
+  if exact_count == 1 and exact_hit then
+    return exact_hit.id, exact_hit.url, "search_exact"
+  end
+
+  if best and best.score >= 0.95 then
+    local second_score = second and second.score or 0
+    if not second or best.id == second.id or (best.score - second_score) >= 0.08 then
+      return best.id, best.url, "search_fuzzy"
+    end
+  end
+
+  return nil
+end
+
+local function resolve_bgm_binding(anime_info, episode_id)
+  if not anime_info then
+    return nil
+  end
+
+  local bgm_url = anime_info.bangumiUrl
+  local bgm_id = bgm_url and tonumber(bgm_url:match("/(%d+)$")) or nil
+  if bgm_id then
+    return bgm_id, bgm_url, "dandanplay"
+  end
+
+  local resolved_id, resolved_url, source = resolve_bgm_id_from_online_databases(anime_info)
+  if not resolved_id then
+    resolved_id, resolved_url, source = resolve_bgm_id_from_search(anime_info)
+  end
+
+  if resolved_id then
+    anime_info.bangumiUrl = resolved_url
+    write_json_file(db.get_path(episode_id, "info"), anime_info)
+    return resolved_id, resolved_url, source
+  end
+
+  return nil
+end
+
 local function sync_context_execute(opts)
   opts = opts or {}
   local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
@@ -581,18 +739,44 @@ local function sync_context_execute(opts)
     anime_info = get_anime_info_cached(episode_id, anime_id, {force_refresh = refresh})
   end
 
-  if not anime_info or not anime_info.bangumiUrl then
+  if not anime_info then
     mp.msg.error("Anime info not available: " .. tostring(episode_id))
     mp.msg.verbose("sync_context: anime_info 缺失或无 bangumiUrl")
-    return {status = "error", error = "AnimeInfoError", episode_id = episode_id}
+    return {
+      status = "error",
+      error = "AnimeInfoError",
+      reason = "AnimeInfoMissing",
+      episode_id = episode_id,
+    }
   end
 
-  local bgm_id = tonumber(anime_info.bangumiUrl:match("/(%d+)$"))
-  mp.msg.verbose("sync_context: 解析 bgm_id=" .. tostring(bgm_id))
+  local bgm_id, bgm_url, bgm_source = resolve_bgm_binding(anime_info, episode_id)
+  mp.msg.verbose(
+    string.format(
+      "sync_context: 解析 bgm_id=%s source=%s",
+      tostring(bgm_id),
+      tostring(bgm_source)
+    )
+  )
+  if not bgm_id then
+    mp.msg.error(
+      string.format(
+        "Bangumi URL missing in anime info: episode_id=%s anime_id=%s",
+        tostring(episode_id),
+        tostring(anime_info and anime_info.animeId)
+      )
+    )
+    mp.msg.verbose("sync_context: bangumiUrl 缺失，且 Bangumi 条目回退解析失败")
+    return {
+      status = "error",
+      error = "AnimeInfoError",
+      reason = "BangumiUrlMissing",
+      episode_id = episode_id,
+    }
+  end
   if bgm_id then
     db.set_bgm_id(file_path, bgm_id)
   end
-
   local episodes = nil
   if ensure_episodes then
     episodes = get_user_episodes_cached(episode_id, bgm_id, {force_refresh = refresh})
@@ -607,7 +791,7 @@ local function sync_context_execute(opts)
       episode_info = episode_info,
       anime_info = anime_info,
       bgm_id = bgm_id,
-      bgm_url = bgm_id and ("https://bgm.tv/subject/" .. tostring(bgm_id)) or nil,
+      bgm_url = bgm_url or (bgm_id and ("https://bgm.tv/subject/" .. tostring(bgm_id)) or nil),
       episodes = episodes,
       sync_mode = sync_mode,
     },
