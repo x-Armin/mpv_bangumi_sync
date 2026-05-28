@@ -143,4 +143,11 @@ function M.patch(url, options)
   return M.request(url, options)
 end
 
+-- DELETE请求
+function M.delete(url, options)
+  options = options or {}
+  options.method = "DELETE"
+  return M.request(url, options)
+end
+
 return M

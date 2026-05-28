@@ -99,6 +99,39 @@ function M.open_match_menu(matches)
   M.open_uosc_menu(menu_props)
 end
 
+function M.open_episode_status_menu(state)
+  state = state or {}
+  local current_status = state.EpisodeStatusText or "未获取"
+  local items = {
+    {
+      title = "标记为已看",
+      hint = current_status == "已看" and "当前" or nil,
+      value = { "script-message-to", mp.get_script_name(), "bgm-set-episode-status", "2" },
+      keep_open = false,
+      selectable = true,
+    },
+    {
+      title = "标记为未看",
+      hint = current_status == "未看" and "当前" or nil,
+      value = { "script-message-to", mp.get_script_name(), "bgm-set-episode-status", "0" },
+      keep_open = false,
+      selectable = true,
+    },
+    {
+      title = "返回",
+      value = { "script-message-to", mp.get_script_name(), "bgm-back-info-menu" },
+      keep_open = false,
+      selectable = true,
+    },
+  }
+  M.open_uosc_menu({
+    type = "menu_bgm_status",
+    title = "修改单集状态",
+    search_style = "disabled",
+    items = items,
+  })
+end
+
 local function build_info_menu_props(state)
   local CurrentEpisodeInfo = state.CurrentEpisodeInfo
   local EpisodeStatusText = state.EpisodeStatusText
@@ -132,7 +165,11 @@ local function build_info_menu_props(state)
       title = status_title,
       italic = status_italic, muted = status_muted,
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
-      keep_open = true},
+      keep_open = true,
+      actions = {
+        { name = "edit_status", icon = "edit", label = "修改当前集状态" },
+      },
+      actions_place = "inside" },
     {
       title = "进 度  " .. EpisodeProgressText,
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },

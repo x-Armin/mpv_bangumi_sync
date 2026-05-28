@@ -73,7 +73,6 @@ end
 local function get_headers()
   return {
     ["accept"] = "application/json",
-    ["Content-Type"] = "application/json",
     ["User-Agent"] = "mpv_bangumi_sync/private",
     ["Authorization"] = "Bearer " .. (config.config.access_token or ""),
   }
@@ -144,6 +143,22 @@ function M.patch(uri, data, opts)
   end
 
   mp.msg.verbose("bangumi_api PATCH response: " .. dump_for_log(res))
+  res.status_code = res.status_code or 200
+  return res
+end
+
+-- DELETE请求
+function M.delete(uri)
+  local url = API_URL .. uri
+  local res = http.delete(url, {
+    headers = get_headers(),
+  })
+
+  if not res then
+    return {status_code = 500, body = {}}
+  end
+
+  mp.msg.verbose("bangumi_api DELETE response: " .. dump_for_log(res))
   res.status_code = res.status_code or 200
   return res
 end

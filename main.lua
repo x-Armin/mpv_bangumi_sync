@@ -334,6 +334,185 @@ local function update_info_menu_view()
   })
 end
 
+local function get_info_menu_state()
+  return {
+    UoscAvailable = UoscAvailable,
+    CurrentEpisodeInfo = CurrentEpisodeInfo,
+    EpisodeStatusText = EpisodeStatusText,
+    EpisodeProgressText = EpisodeProgressText,
+    AutoMarkText = AutoMarkText,
+  }
+end
+
+local function read_json_file(path)
+  local file = path and io.open(path, "r") or nil
+  if not file then
+    return nil
+  end
+  local content = file:read("*all")
+  file:close()
+  return mp_utils.parse_json(content)
+end
+
+local function write_json_file(path, data)
+  local file = path and io.open(path, "w") or nil
+  if not file then
+    return false
+  end
+  file:write(mp_utils.format_json(data) or "{}")
+  file:close()
+  return true
+end
+
+local function get_current_episode_context(opts)
+  opts = opts or {}
+  local file_path = get_current_file_path()
+  if not file_path then
+    return nil, "PathUnavailable"
+  end
+
+  local db_record = db.get({ path = file_path })
+  local bgm_id = (AnimeInfo and AnimeInfo.bgm_id) or (db_record and db_record.bgm_id)
+  if not bgm_id then
+    return nil, "BgmUnavailable"
+  end
+
+  local runtime_episode_id = CurrentEpisodeInfo and tonumber(CurrentEpisodeInfo.episodeId) or nil
+  if not runtime_episode_id then
+    if db_record and db_record.manual and db_record.bgm_id then
+      runtime_episode_id = resolve_runtime_episode_id(db_record.bgm_id)
+    elseif db_record then
+      runtime_episode_id = db_record.dandanplay_id or resolve_runtime_episode_id(db_record.bgm_id)
+    end
+  end
+  if not runtime_episode_id then
+    return nil, "EpisodeUnavailable"
+  end
+
+  local episodes_path = db.get_path(runtime_episode_id, "episodes")
+  local episodes_data = nil
+  if opts.force_refresh ~= true then
+    episodes_data = read_json_file(episodes_path)
+  end
+  if not episodes_data or not episodes_data.data then
+    episodes_data = sync_context.get_user_episodes_cached(
+      runtime_episode_id,
+      bgm_id,
+      { force_refresh = opts.force_refresh == true }
+    )
+  end
+  if not episodes_data or not episodes_data.data then
+    return nil, "EpisodesUnavailable"
+  end
+
+  return {
+    bgm_id = bgm_id,
+    runtime_episode_id = runtime_episode_id,
+    episodes_path = episodes_path,
+    episodes_data = episodes_data,
+  }
+end
+
+local function resolve_current_bgm_episode(context)
+  if not context or not context.episodes_data then
+    return nil, nil
+  end
+
+  local bgm_episode_id = CurrentEpisodeInfo and tonumber(CurrentEpisodeInfo.bgmEpisodeId) or nil
+  if not bgm_episode_id then
+    local result = episode_status.compute(CurrentEpisodeInfo, context.episodes_data)
+    if result and result.episode_info then
+      CurrentEpisodeInfo = result.episode_info
+      bgm_episode_id = tonumber(CurrentEpisodeInfo.bgmEpisodeId)
+    end
+  end
+  if not bgm_episode_id then
+    return nil, nil
+  end
+
+  for _, ep_info in ipairs(context.episodes_data.data or {}) do
+    local current_id = ep_info and ep_info.episode and tonumber(ep_info.episode.id) or nil
+    if current_id and current_id == bgm_episode_id then
+      return bgm_episode_id, ep_info
+    end
+  end
+  return bgm_episode_id, nil
+end
+
+local function update_local_episode_status(context, episode_item, status)
+  if not episode_item then
+    return false
+  end
+  if tonumber(episode_item.type) == status then
+    return true
+  end
+  episode_item.type = status
+  return write_json_file(context.episodes_path, context.episodes_data)
+end
+
+local function set_current_episode_status(status)
+  status = tonumber(status)
+  if status ~= 0 and status ~= 2 then
+    mp.osd_message("无效的剧集状态", 2)
+    return
+  end
+
+  local context, context_err = get_current_episode_context()
+  if not context then
+    if context_err == "PathUnavailable" then
+      mp.osd_message("无法获取当前文件路径", 2)
+    elseif context_err == "BgmUnavailable" then
+      mp.osd_message("缺少Bangumi条目信息", 2)
+    else
+      mp.osd_message("无法定位当前集", 2)
+    end
+    return
+  end
+
+  local bgm_episode_id, episode_item = resolve_current_bgm_episode(context)
+  if not bgm_episode_id then
+    mp.osd_message("无法定位当前集", 2)
+    return
+  end
+
+  local previous_status = episode_item and tonumber(episode_item.type) or nil
+  if previous_status == nil then
+    previous_status = CurrentEpisodeWatched and 2 or nil
+  end
+
+  if previous_status == status then
+    local current_text = (status == 2) and "已看" or "未看"
+    mp.osd_message("当前已是" .. current_text, 2)
+    return
+  end
+
+  local res = bangumi_api.update_episode_status(bgm_episode_id, status)
+  if not res or tonumber(res.status_code or 0) >= 400 then
+    mp.msg.error("手动更新剧集状态失败: " .. tostring(bgm_episode_id))
+    mp.osd_message("更新剧集状态失败", 2)
+    return
+  end
+
+  local local_updated = update_local_episode_status(context, episode_item, status)
+  if not local_updated then
+    local refreshed = sync_context.get_user_episodes_cached(
+      context.runtime_episode_id,
+      context.bgm_id,
+      { force_refresh = true }
+    )
+    if refreshed and refreshed.data then
+      context.episodes_data = refreshed
+    end
+  end
+  update_episode_status_from_cache(context.episodes_data)
+  EpisodesReady = true
+  reconcile_update_timer()
+  update_info_menu_view()
+
+  local status_text = (status == 2) and "已看" or "未看"
+  mp.osd_message("已标记为" .. status_text, 2)
+end
+
 local function apply_auto_mark_mode(opts)
   opts = opts or {}
   local previous = AutoMarkEnabled
@@ -415,13 +594,7 @@ mp.register_script_message("open-bangumi-url", function()
 end)
 
 mp.register_script_message("open-bangumi-info", function()
-  ui_menu.open_info_menu({
-    UoscAvailable = UoscAvailable,
-    CurrentEpisodeInfo = CurrentEpisodeInfo,
-    EpisodeStatusText = EpisodeStatusText,
-    EpisodeProgressText = EpisodeProgressText,
-    AutoMarkText = AutoMarkText,
-  })
+  ui_menu.open_info_menu(get_info_menu_state())
 end)
 
 mp.register_script_message("bgm-toggle-auto-mark", function()
@@ -475,6 +648,11 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
     mp.osd_message("已刷新", 2)
     return
   end
+  if event.action == "edit_status" then
+    mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
+    ui_menu.open_episode_status_menu(get_info_menu_state())
+    return
+  end
   if event.action then
     return
   end
@@ -498,6 +676,16 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
   if not event.keep_open and not modifiers then
     mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
   end
+end)
+
+mp.register_script_message("bgm-back-info-menu", function()
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_status")
+  ui_menu.open_info_menu(get_info_menu_state())
+end)
+
+mp.register_script_message("bgm-set-episode-status", function(status)
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_status")
+  set_current_episode_status(status)
 end)
 
 mp.register_script_message("bgm-open-search-from-info", function()
