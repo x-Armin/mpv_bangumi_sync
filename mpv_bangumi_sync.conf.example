@@ -4,6 +4,18 @@
 # Bangumi访问令牌（必需）
 # 获取地址：https://next.bgm.tv/demo/access-token
 bgm_access_token=你的访问令牌
+
+# Bangumi API代理，留空表示不使用代理；仅作用于 Bangumi API
+# 支持 curl 可识别的代理格式，例如：
+# bgm_proxy=http://127.0.0.1:7890
+# bgm_proxy=socks5://127.0.0.1:7890
+# bgm_proxy=socks5h://127.0.0.1:7890
+# 如果代理需要用户名密码，可写入代理 URL：
+# bgm_proxy=http://username:password@127.0.0.1:7890
+# 如果用户名或密码包含特殊字符，请使用 URL 编码
+# 例如密码 pa:ss@word 应写成 pa%3Ass%40word
+bgm_proxy=
+
 # 番剧目录（插件只会在这些目录下激活）
 # 番剧存储目录1 (播放到阈值立即标记看过)
 # Windows使用分号分隔多个目录，Linux/Mac使用冒号分隔
