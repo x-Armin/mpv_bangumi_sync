@@ -4,7 +4,7 @@ local M = {}
 
 -- 使用curl进行HTTP请求
 -- @param url string 请求URL
--- @param options table 请求选项 {method, headers, params, data}
+-- @param options table 请求选项 {method, headers, params, data, proxy}
 -- @return table {status_code, body, headers}
 function M.request(url, options)
   options = options or {}
@@ -12,10 +12,16 @@ function M.request(url, options)
   local headers = options.headers or {}
   local params = options.params
   local data = options.data
+  local proxy = options.proxy
   local detach = options.detach == true
 
   -- 构建curl命令
   local args = {"curl", "-s", "-S", "-X", method}
+
+  if proxy and proxy ~= "" then
+    table.insert(args, "--proxy")
+    table.insert(args, proxy)
+  end
 
   -- 添加headers
   for key, value in pairs(headers) do

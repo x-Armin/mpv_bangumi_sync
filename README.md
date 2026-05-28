@@ -37,6 +37,11 @@ mpv-lazy/portable_config/scripts/mpv_bangumi_sync
 
 - 进度阈值（0~1）：`progress_mark_threshold`，默认 0.9
 - 补番批量同步阈值：`batch_sync_threshold`，默认 4；设为 0 表示不自动批量同步
+- Bangumi API 代理：`bgm_proxy`，默认留空表示不使用代理；该代理只作用于 Bangumi API，不影响弹弹play API
+  - 示例：`bgm_proxy=http://127.0.0.1:7890`
+  - 示例：`bgm_proxy=socks5h://127.0.0.1:7890`
+  - 带用户名密码：`bgm_proxy=http://username:password@127.0.0.1:7890`
+  - 用户名或密码包含特殊字符时请使用 URL 编码，例如密码 `pa:ss@word` 应写成 `pa%3Ass%40word`
 - 自动点格子开关：`enable_auto_mark`，默认 `yes`
   - `yes`：自动同步条目状态和单集状态
   - `no`：仅展示信息，不同步状态

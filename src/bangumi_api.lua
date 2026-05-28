@@ -78,12 +78,17 @@ local function get_headers()
   }
 end
 
+local function get_proxy()
+  return config.config.bgm_proxy
+end
+
 -- GET请求
 function M.get(uri, params)
   local url = API_URL .. uri
   local res = http.get(url, {
     headers = get_headers(),
     params = params,
+    proxy = get_proxy(),
   })
   
   if not res then
@@ -101,6 +106,7 @@ function M.post(uri, data)
   local res = http.post(url, {
     headers = get_headers(),
     data = data,
+    proxy = get_proxy(),
   })
   
   if not res then
@@ -118,6 +124,7 @@ function M.put(uri, data)
   local res = http.put(url, {
     headers = get_headers(),
     data = data,
+    proxy = get_proxy(),
   })
   
   if not res then
@@ -135,6 +142,7 @@ function M.patch(uri, data, opts)
   local res = http.patch(url, {
     headers = get_headers(),
     data = data,
+    proxy = get_proxy(),
     detach = opts and opts.detach or false,
   })
 

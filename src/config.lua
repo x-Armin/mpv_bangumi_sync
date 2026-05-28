@@ -4,6 +4,9 @@ Options = {
   -- Bangumi访问令牌（必需）
   bgm_access_token = "",
 
+  -- Bangumi API代理，留空表示不使用代理
+  bgm_proxy = "",
+
   -- 新番存储目录（播放时即时同步）
   -- Windows用分号分隔多个目录，Linux/Mac用冒号分隔
   storages = "",
@@ -118,6 +121,7 @@ end
 
 local function apply_options()
   Options.bgm_access_token = normalize_string(Options.bgm_access_token, "")
+  Options.bgm_proxy = normalize_string(Options.bgm_proxy, "")
   Options.storages = normalize_string(Options.storages, "")
   Options.old_ani_storages = normalize_string(Options.old_ani_storages, "")
   Options.enable_auto_mark = normalize_boolean(Options.enable_auto_mark, true)
@@ -142,6 +146,7 @@ local function apply_options()
   end
 
   public_config.access_token = Options.bgm_access_token
+  public_config.bgm_proxy = Options.bgm_proxy
   public_config.storages = Options.all_storages_list
   public_config.new_storages = Options.storages_list
   public_config.old_ani_storages = Options.old_ani_storages_list
