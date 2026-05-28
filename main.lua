@@ -293,6 +293,10 @@ local function init(episode_id, opts)
         mp.osd_message("无法从文件名解析集数，请检查命名", 3)
         return
       end
+      if err and err.error == "AnimeInfoError" and err.reason == "BangumiUrlMissing" then
+        mp.msg.error("番剧信息缺少 bangumiUrl，无法解析 Bangumi 条目")
+        return
+      end
       mp.msg.error("获取番剧元信息失败")
     end,
   }
