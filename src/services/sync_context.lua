@@ -228,6 +228,10 @@ is_in_storage_path = function(file_path)
   return storage_gate.is_in_storage_path(file_path)
 end
 
+local function resolve_storage(file_path)
+  return storage_gate.resolve_storage(file_path)
+end
+
 -- 构造episode match
 local function construct_episode_match(episode_id, opts)
   local anime_id = math.floor(episode_id / 10000)
@@ -513,7 +517,8 @@ local function sync_context_execute(opts)
   end
 
   mp.msg.verbose("sync_context: 已获取文件路径")
-  if not is_in_storage_path(file_path) then
+  local storage_config = resolve_storage(file_path)
+  if not storage_config then
     mp.msg.info("sync_context: 文件不在配置的存储路径内")
     return {
       status = "error",
@@ -522,7 +527,6 @@ local function sync_context_execute(opts)
     }
   end
 
-  local sync_mode = storage_gate.get_sync_mode(file_path) or "new"
   local dir_path, filename = split_file_path(file_path)
 
   local db_record = db.get({path = file_path})
@@ -631,7 +635,7 @@ local function sync_context_execute(opts)
         bgm_id = manual_bgm_id,
         bgm_url = "https://bgm.tv/subject/" .. tostring(manual_bgm_id),
         episodes = episodes,
-        sync_mode = sync_mode,
+        storage = storage_config,
       },
     }
   end
@@ -793,7 +797,7 @@ local function sync_context_execute(opts)
       bgm_id = bgm_id,
       bgm_url = bgm_url or (bgm_id and ("https://bgm.tv/subject/" .. tostring(bgm_id)) or nil),
       episodes = episodes,
-      sync_mode = sync_mode,
+      storage = storage_config,
     },
   }
 end

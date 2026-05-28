@@ -28,22 +28,32 @@ function M.is_in_storage_path(file_path, storages)
   return false
 end
 
--- 判断是否为补番路径
-function M.is_old_path(file_path)
-  local list = (config.config and config.config.old_ani_storages) or {}
-  return M.is_in_storage_path(file_path, list)
-end
-
--- 获取同步模式：new / old / nil
-function M.get_sync_mode(file_path)
-  if M.is_old_path(file_path) then
-    return "old"
+function M.resolve_storage(file_path)
+  if not file_path or file_path == "" then
+    return nil
   end
-  local list = (config.config and config.config.new_storages) or {}
-  if M.is_in_storage_path(file_path, list) then
-    return "new"
+  local normalized_path = normalize_path(file_path)
+  local best = nil
+  for _, group in ipairs((config.config and config.config.storage_groups) or {}) do
+    for _, storage in ipairs(group.storages or {}) do
+      local normalized_storage = normalize_path(storage)
+      if normalized_storage
+        and normalized_storage ~= ""
+        and normalized_path:find(normalized_storage, 1, true) == 1 then
+        local len = #normalized_storage
+        if not best or len > best.match_length then
+          best = {
+            key = group.key,
+            storages = group.storages,
+            batch_sync_threshold = group.batch_sync_threshold,
+            matched_storage = storage,
+            match_length = len,
+          }
+        end
+      end
+    end
   end
-  return nil
+  return best
 end
 
 return M

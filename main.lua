@@ -21,7 +21,7 @@ UpdateEpisodeTimer = nil
 EpisodesReady = false
 MatchResults = nil
 UoscAvailable = false
-SyncMode = "new"
+StorageConfig = nil
 AutoMarkEnabled = Options.enable_auto_mark ~= false
 AutoMarkText = AutoMarkEnabled and "开启" or "禁用"
 CurrentEpisodeWatched = false
@@ -51,7 +51,7 @@ local function reset_globals()
   EpisodeStatusText = "未获取"
   EpisodeProgressText = "未获取"
   CurrentEpisodeWatched = false
-  SyncMode = "new"
+  StorageConfig = nil
   if UpdateEpisodeTimer then
     UpdateEpisodeTimer:kill()
     UpdateEpisodeTimer = nil
@@ -127,7 +127,7 @@ local function start_update_timer_if_needed()
     end
 
     stop_update_timer("到达进度阈值，开始同步")
-    bangumi_service.update_episode({defer = (SyncMode == "old"), anime_info = AnimeInfo}).async {
+    bangumi_service.update_episode({anime_info = AnimeInfo, storage = StorageConfig}).async {
       resp = function(data)
         data = data or {}
         local updated = update_episode_status_from_cache(data and data.episodes_data or nil)
@@ -135,8 +135,18 @@ local function start_update_timer_if_needed()
           EpisodesReady = true
         end
         local collection_update_message = data.collection_update_message
-        if data.deferred then
-          local message = compose_sync_message(collection_update_message, "补番：已加入待批量同步列表")
+        if data.flush_failed then
+          local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度失败，已保留待重试")
+          mp.msg.warn(message:gsub("\n", " | "))
+          mp.osd_message(message, 3)
+        elseif data.flushed then
+          local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度成功")
+          mp.msg.info(message:gsub("\n", " | "))
+          mp.osd_message(message)
+          EpisodeStatusText = "宸茬湅"
+          CurrentEpisodeWatched = true
+        elseif data.deferred then
+          local message = compose_sync_message(collection_update_message, "已加入待批量同步队列")
           mp.msg.info(message:gsub("\n", " | "))
           mp.osd_message(message, 3)
         elseif data.disabled then
@@ -265,7 +275,7 @@ local function init(episode_id, opts)
       anime_info.bgm_id = result.context.bgm_id
       anime_info.bgm_url = result.context.bgm_url
       AnimeInfo = anime_info
-      SyncMode = result.context.sync_mode or "new"
+      StorageConfig = result.context.storage
       EpisodesReady = update_episode_status_from_cache(result.context.episodes)
 
       mp.msg.verbose(
@@ -320,7 +330,11 @@ end
 flush_pending_updates = function(reason, opts)
   local results = bangumi_service.flush_pending(opts)
   if results and #results > 0 then
-    mp.msg.info(string.format("Batch synced episodes: %d", #results))
+    local count = 0
+    for _, result in ipairs(results) do
+      count = count + (tonumber(result.count) or 0)
+    end
+    mp.msg.info(string.format("Batch synced episodes: %d", count))
   end
 end
 
