@@ -2,92 +2,149 @@
 
 使用 mpv 播放动画时，自动同步 Bangumi 追番进度，并支持显示番剧信息。
 
+插件会在播放文件后自动识别番剧和集数，读取当前 Bangumi 剧集状态，并在播放进度达到阈值后将当前集标记为“已看”。如果条目尚未收藏或不是“在看”，会在同步单集状态时一并更新条目状态。
+
 ## 功能
-- 自动识别番剧并匹配Bangumi条目
-- 当单集被标记为“已看”时（到达进度阈值触发），会检测条目收藏状态；若未收藏/非“在看”会自动更新为“在看”并在左上角提示
-- 观看进度达到配置阈值（默认0.9）时自动将Bangumi这一集标为看过，并在左上角弹出提示
-- 支持“自动点格子（开启/禁用）”开关；禁用时仅展示信息，不会写回Bangumi状态
-- 默认绑定"Alt+o"打开番剧信息表，界面如下
+
+- 自动识别番剧并匹配 Bangumi 条目
+- 播放进度达到阈值后自动标记当前集为“已看”
+- 支持批量标记，减少连续观看多集时的 Bangumi 时间线刷屏
+- 支持自动点格子开关，禁用后仅展示信息，不自动标记 Bangumi 格子
+- 支持番剧信息窗口，查看当前条目、剧集进度和单集状态
+- 支持手动匹配弹弹play结果，或直接搜索 Bangumi 条目绑定当前目录
+
+番剧信息窗口：
+
 ![番剧信息](doc/anime-info.png)
 ![番剧信息](doc/anime-info2.png)
 
 ## 依赖
-- **curl**（HTTP 请求）
-- **ffprobe**（视频信息提取）
-（一般电脑都装了，不用管）
+
+- curl：用于 HTTP 请求
+- ffprobe：用于读取视频信息
+- uosc：用于显示番剧信息窗口
+
+MPV_lazy 通常已经包含这些组件。没有 uosc 时，自动同步功能仍可使用，但番剧信息窗口不可用或体验受限。
 
 ## 安装
-下载 zip 解压到mpv的插件目录，mpv-lazy如下：
-```
+
+下载 zip 并解压到 mpv 的脚本目录。MPV_lazy 的路径通常如下：
+
+```text
 mpv-lazy/portable_config/scripts/mpv_bangumi_sync
 ```
 
-## 数据目录
-用来存放缓存的弹弹play id以及动画和单集的信息
-- `portable_config/mpv_bangumi_sync_data/`
-
+目录中应包含 `main.lua`、`src`、`mpv_bangumi_sync.conf` 等文件。
 
 ## 配置
-- 将`mpv_bangumi_sync.conf`复制到 mpv 配置目录
-`mpv-lazy/portable_config/script-opts`
 
-- 如果要添加uosc按钮，可以在uosc.conf中的"controls="字段添加
-`command:info:script-message open-bangumi-info?番剧信息`
-放在喜欢的位置即可
+将插件目录中的 `mpv_bangumi_sync.conf` 复制到 mpv 配置目录的 `script-opts` 下：
 
-- 进度阈值（0~1）：`progress_mark_threshold`，默认 0.9
-- Storage 1 批量同步阈值：`storage1_batch_sync_threshold`，默认 1
-- Storage 2 批量同步阈值：`storage2_batch_sync_threshold`，默认 4
-- 批量同步阈值设为 0 时，不按数量自动同步；退出/关闭自动点格子时仍会同步 pending
-- Bangumi API 代理：`bgm_proxy`，默认留空表示不使用代理；该代理只作用于 Bangumi API，不影响弹弹play API
-  - 示例：`bgm_proxy=http://127.0.0.1:7890`
-  - 示例：`bgm_proxy=socks5h://127.0.0.1:7890`
-  - 带用户名密码：`bgm_proxy=http://username:password@127.0.0.1:7890`
-  - 用户名或密码包含特殊字符时请使用 URL 编码，例如密码 `pa:ss@word` 应写成 `pa%3Ass%40word`
-- 自动点格子开关：`enable_auto_mark`，默认 `yes`
-  - `yes`：自动同步条目状态和单集状态
-  - `no`：仅展示信息，不同步状态
+```text
+mpv-lazy/portable_config/script-opts/mpv_bangumi_sync.conf
+```
+
+至少需要配置 Bangumi access token 和动画存储目录：
+
+```conf
+bgm_access_token=your_access_token
+storage1=D:/Anime
+```
+
+Bangumi access token 可在这里生成：
+
+https://next.bgm.tv/demo/access-token
+
+如果有多个动画目录，Windows 使用分号分隔，Linux/Mac 使用冒号分隔：
+
+```conf
+storage1=D:/Anime;E:/Anime
+storage1=/home/user/Anime:/mnt/nas/Anime
+```
+
+插件只会处理 `storage1` 和 `storage2` 指定目录下的视频。
+设置两个目录是为了分别设置点格子的频率，比如新番希望看一集立马点一次格子，补旧番希望4集点一次格子避免刷屏。如果没有这种需求的话，统一设置在storage1下就行
+
+### 常用选项
+
+```conf
+enable_auto_mark=yes
+progress_mark_threshold=0.9
+storage1_batch_sync_threshold=1
+storage2_batch_sync_threshold=4
+bgm_proxy=
+```
+
+- `enable_auto_mark`：是否自动点 Bangumi 格子。设为 `no` 时只展示信息。
+- `progress_mark_threshold`：标记已看的播放进度阈值，`0.9` 表示 90%。
+- `storage*_batch_sync_threshold`：待同步剧集数量达到阈值时批量同步。设为 `0` 时不按数量自动同步，但退出 mpv 或关闭自动点格子时仍会同步。
+- `bgm_proxy`：Bangumi API 代理，留空表示不使用代理。该代理不影响弹弹play API。
+
+代理示例：
+
+```conf
+bgm_proxy=http://127.0.0.1:7890
+bgm_proxy=socks5h://127.0.0.1:7890
+```
+
 ## 使用
-- 播放视频后自动匹配番剧，进度达到阈值（默认 0.9）时标记为“已看”，并在此时检测/修正条目收藏状态
-- 若当前集打开时已是“已看”，不会再启动进度检测定时器
-- `Alt+o` 打开番剧信息窗口（依赖 uosc）
-- 信息窗口内可查看标题/进度/状态；点击“手动匹配”后可选择：
-  - 弹弹play 搜索（原流程）
-  - Bangumi 搜索（会将当前目录绑定到选中的 Bangumi 条目）
-- 信息窗口内“自动点格子”一栏提供常驻“切换”按钮，可直接在面板里开启/禁用
-- 右侧“刷新”会重新拉取 Bangumi 剧集信息并更新显示
-- 插件只在配置文件的 `storage1` 和 `storage2` 指定目录下生效
-- `storage1` 和 `storage2` 使用完全一致的批量同步逻辑，区别只是默认阈值不同
-- 播放达到进度阈值后会先记录到 pending；当该 storage 组的 pending 数量达到阈值时立即批量同步
-- `storage1_batch_sync_threshold=1` 时，每次点格子都会立即触发批量同步，表现接近原来的立即同步
-- `enable_auto_mark` 播放中切换实时生效：
-  - 开启 -> 禁用：会先执行一次 pending 批量同步，再停用自动点格子
-  - 禁用 -> 开启：满足条件时恢复进度检测
+
+播放 `storage1` 或 `storage2` 下的视频后，插件会自动初始化当前番剧信息。播放进度达到阈值时，会将当前集加入同步队列；队列达到对应 storage 的批量同步阈值后写回 Bangumi。
+
+默认快捷键：
+
+```text
+Alt+o
+```
+
+打开番剧信息窗口后，可以查看标题、剧集进度、单集状态，刷新 Bangumi 剧集信息，切换自动点格子，或进入手动匹配。
+
+如果要在 uosc 控制栏添加按钮，可在 `script-opts/uosc.conf` 的 `controls=` 中添加：
+
+```text
+command:info:script-message open-bangumi-info?番剧信息
+```
+
+## 手动匹配
+
+自动匹配失败或结果不准确时，可以从番剧信息窗口进入手动匹配。
+
+- 弹弹play 搜索：按弹弹play番剧和剧集重新选择
+- Bangumi 搜索：直接选择 Bangumi 条目，并绑定当前目录
+
+通过 Bangumi 搜索绑定目录后，同一目录下的后续剧集会优先使用该 Bangumi 条目。
+
+## 数据目录
+
+插件会在 mpv 配置目录下保存缓存数据：
+
+```text
+portable_config/mpv_bangumi_sync_data/
+```
+
+该目录用于保存弹弹play id、Bangumi 条目、剧集信息和手动绑定结果。通常不需要手动修改。
 
 ## 注意
-- 本插件仅在Windows 10环境测试过，未测试过Linux环境。
-- 插件只在 `storage1` 和 `storage2` 指定的目录下生效
-- 关闭 mpv 时会同步尚未 flush 的 pending 记录；pending 较多时可能略微影响退出速度。
+
+- 本插件主要在 Windows 10 环境测试，其他系统未充分验证。
+- 插件只在 `storage1` 和 `storage2` 指定目录下生效。
+- 若当前集打开时已是“已看”，不会再启动进度检测定时器。
+- 关闭 mpv 时会同步尚未 flush 的 pending 记录；pending 较多时可能影响退出速度。如果比较介意的话，请将storage*_batch_sync_threshold修改到1
 - 如果同一路径同时匹配两个 storage 组，会使用匹配路径更长、更具体的那一组配置。
 
-## 后续开发计划
-本项目只专注与bgm相关的功能，后续也不会添加比较重型的功能
+## 后续计划
 
+本项目只专注于 Bangumi 相关功能，后续也不会添加较重型功能。
 
-✅ 适配 uosc，添加同步信息窗口
-
-✅ 优化缓存匹配更新逻辑，目前部分场景会存在匹配不到信息又不更新缓存的bug，近期会修复（一月番好看的太多了，没时间debug）
-
-✅ 适配批量同步逻辑，避免短时间每集都标记一次导致刷屏 Bangumi 时间线
-
-⬜️ 从api获取信息的流程改为异步，这样不阻塞打开信息窗口。（mpv lua似乎没有线程的概念，方案还需再想想，改动会比较大）
-
-
+- ✅ 适配 uosc，添加同步信息窗口
+- ✅ 优化缓存匹配更新逻辑
+- ✅ 适配批量同步逻辑，避免短时间每集都标记一次导致刷屏 Bangumi 时间线
+- ⬜ 从 API 获取信息的流程改为异步，减少打开信息窗口时的阻塞
 
 ## 感谢
-本项目大量借用 [mpv_bangumi](https://github.com/slqy123/mpv_bangumi)的代码，在此基础上删除了弹幕功能，移除了对 Python 和闭源可执行程序的依赖，纯lua实现。
 
+本项目大量借用 [mpv_bangumi](https://github.com/slqy123/mpv_bangumi) 的代码，在此基础上删除了弹幕功能，移除了对 Python 和闭源可执行程序的依赖，纯 Lua 实现。
 
-番剧信息窗口依赖于[uosc UI框架](https://github.com/tomasklaen/uosc)。要使用该功能请为mpv播放器安装uosc。uosc的安装步骤可以参考其[官方安装教程](https://github.com/tomasklaen/uosc?tab=readme-ov-file#install)。如果使用[MPV_lazy](https://github.com/hooke007/MPV_lazy)等内置了uosc的懒人包则只需安装本插件即可。
+番剧信息窗口依赖 [uosc UI 框架](https://github.com/tomasklaen/uosc)。如果使用 [MPV_lazy](https://github.com/hooke007/MPV_lazy) 等内置 uosc 的懒人包，只需安装本插件即可。
 
-PS：⚠️⚠️⚠️之前没用过lua，所以大部分代码是AI写，我负责review和debug，使用上有bug可以提issue，有时间就会尽力解决
+如果需要使用弹幕功能，推荐安装[uosc_danmaku](https://github.com/Tony15246/uosc_danmaku)

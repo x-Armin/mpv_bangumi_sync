@@ -1,4 +1,6 @@
--- mpv_bangumi_sync v1.0.0
+local SCRIPT_NAME = "mpv_bangumi_sync"
+local SCRIPT_VERSION = "1.0.0"
+
 local config = require "src.config"
 local sync_context = require "src.services.sync_context"
 local bangumi_service = require "src.services.bangumi_service"
@@ -11,6 +13,8 @@ local episode_status = require "src.services.episode_status"
 local title_guess = require "src.title_guess"
 local input = require "mp.input"
 local ui_menu = require "src.ui_menu"
+
+mp.msg.info(string.format("%s v%s loaded", SCRIPT_NAME, SCRIPT_VERSION))
 
 -- global variables
 AnimeInfo = nil
