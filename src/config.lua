@@ -7,20 +7,19 @@ Options = {
   -- Bangumi API代理，留空表示不使用代理
   bgm_proxy = "",
 
-  -- 新番存储目录（播放时即时同步）
-  -- Windows用分号分隔多个目录，Linux/Mac用冒号分隔
-  storages = "",
+  -- Storage group 1. Use semicolon on Windows and colon on Linux/Mac.
+  storage1 = "",
 
-  -- 补番存储目录（退出播放/关闭播放器时批量同步）
-  -- Windows用分号分隔多个目录，Linux/Mac用冒号分隔
-  old_ani_storages = "",
+  -- Storage group 2. Use semicolon on Windows and colon on Linux/Mac.
+  storage2 = "",
 
   -- 自动点格子（开启/禁用）
   enable_auto_mark = true,
 
   -- 观看进度达到该比例时标记为“已看”（0~1）
   progress_mark_threshold = 0.9,
-  batch_sync_threshold = 4,
+  storage1_batch_sync_threshold = 1,
+  storage2_batch_sync_threshold = 4,
 }
 
 local listeners = {}
@@ -119,26 +118,46 @@ local function merge_storages(primary, extra)
   return merged
 end
 
+local function build_storage_groups()
+  return {
+    {
+      key = "storage1",
+      storages = Options.storage1_list,
+      batch_sync_threshold = Options.storage1_batch_sync_threshold,
+    },
+    {
+      key = "storage2",
+      storages = Options.storage2_list,
+      batch_sync_threshold = Options.storage2_batch_sync_threshold,
+    },
+  }
+end
+
 local function apply_options()
   Options.bgm_access_token = normalize_string(Options.bgm_access_token, "")
   Options.bgm_proxy = normalize_string(Options.bgm_proxy, "")
-  Options.storages = normalize_string(Options.storages, "")
-  Options.old_ani_storages = normalize_string(Options.old_ani_storages, "")
+  Options.storage1 = normalize_string(Options.storage1, "")
+  Options.storage2 = normalize_string(Options.storage2, "")
   Options.enable_auto_mark = normalize_boolean(Options.enable_auto_mark, true)
-  Options.storages_list = parse_storages(Options.storages)
-  Options.old_ani_storages_list = parse_storages(Options.old_ani_storages)
+  Options.storage1_list = parse_storages(Options.storage1)
+  Options.storage2_list = parse_storages(Options.storage2)
   Options.all_storages_list = merge_storages(
-    Options.storages_list,
-    Options.old_ani_storages_list
+    Options.storage1_list,
+    Options.storage2_list
   )
   Options.progress_mark_threshold = clamp_progress_threshold(
     Options.progress_mark_threshold,
     0.9
   )
-  Options.batch_sync_threshold = clamp_batch_threshold(
-    Options.batch_sync_threshold,
+  Options.storage1_batch_sync_threshold = clamp_batch_threshold(
+    Options.storage1_batch_sync_threshold,
+    1
+  )
+  Options.storage2_batch_sync_threshold = clamp_batch_threshold(
+    Options.storage2_batch_sync_threshold,
     4
   )
+  Options.storage_groups = build_storage_groups()
 
   -- 如果没有设置access_token，尝试从环境变量读取
   if not Options.bgm_access_token or Options.bgm_access_token == "" then
@@ -148,8 +167,9 @@ local function apply_options()
   public_config.access_token = Options.bgm_access_token
   public_config.bgm_proxy = Options.bgm_proxy
   public_config.storages = Options.all_storages_list
-  public_config.new_storages = Options.storages_list
-  public_config.old_ani_storages = Options.old_ani_storages_list
+  public_config.storage1 = Options.storage1_list
+  public_config.storage2 = Options.storage2_list
+  public_config.storage_groups = Options.storage_groups
 end
 
 local function notify_options_changed()

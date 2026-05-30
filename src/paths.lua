@@ -52,7 +52,10 @@ function M.get_data_path()
   if not config_dir then
     return nil
   end
-  return mp_utils.join_path(config_dir, "mpv_bangumi_sync_data")
+  return mp_utils.join_path(
+    mp_utils.join_path(config_dir, "script-data"),
+    "mpv_bangumi_sync"
+  )
 end
 
 -- 确保目录存在
