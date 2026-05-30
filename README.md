@@ -28,20 +28,40 @@ MPV_lazy 通常已经包含这些组件。没有 uosc 时，自动同步功能�
 
 ## 安装
 
-下载 zip 并解压到 mpv 的脚本目录。MPV_lazy 的路径通常如下：
+下载 zip 并解压到 mpv 的脚本目录。下面路径均相对于 `mpv.exe` 或 `mpvnet.exe` 所在目录；如果 `portable_config`、`scripts` 或 `script-opts` 目录不存在，手动新建即可。
 
 ```text
-mpv-lazy/portable_config/scripts/mpv_bangumi_sync
+~/mpv/portable_config/scripts/mpv_bangumi_sync
 ```
 
 目录中应包含 `main.lua`、`src`、`mpv_bangumi_sync.conf` 等文件。
+
+<details>
+<summary>文件结构</summary>
+
+```text
+mpv
+├── mpv.exe
+└── portable_config
+    ├── scripts
+    │   └── mpv_bangumi_sync
+    │       ├── LICENSE
+    │       ├── README.md
+    │       ├── main.lua
+    │       ├── mpv_bangumi_sync.conf
+    │       └── src
+    └── script-opts
+        └── mpv_bangumi_sync.conf
+```
+
+</details>
 
 ## 配置
 
 将插件目录中的 `mpv_bangumi_sync.conf` 复制到 mpv 配置目录的 `script-opts` 下：
 
 ```text
-mpv-lazy/portable_config/script-opts/mpv_bangumi_sync.conf
+portable_config/script-opts/mpv_bangumi_sync.conf
 ```
 
 至少需要配置 Bangumi access token 和动画存储目录：
@@ -116,10 +136,10 @@ command:info:script-message open-bangumi-info?番剧信息
 
 ## 数据目录
 
-插件会在 mpv 配置目录下保存缓存数据：
+插件会在 mpv 配置目录下缓存数据，以减少API使用频率：
 
 ```text
-portable_config/mpv_bangumi_sync_data/
+portable_config/script-data/mpv_bangumi_sync/
 ```
 
 该目录用于保存弹弹play id、Bangumi 条目、剧集信息和手动绑定结果。通常不需要手动修改。
