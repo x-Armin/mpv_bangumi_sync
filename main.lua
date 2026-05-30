@@ -140,14 +140,14 @@ local function start_update_timer_if_needed()
         end
         local collection_update_message = data.collection_update_message
         if data.flush_failed then
-          local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度失败，已保留待重试")
+          local message = compose_sync_message(collection_update_message, "同步Bangumi追番进度失败，已保留待重试")
           mp.msg.warn(message:gsub("\n", " | "))
           mp.osd_message(message, 3)
         elseif data.flushed then
-          local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度成功")
+          local message = compose_sync_message(collection_update_message, "同步Bangumi追番进度成功")
           mp.msg.info(message:gsub("\n", " | "))
           mp.osd_message(message)
-          EpisodeStatusText = "宸茬湅"
+          EpisodeStatusText = "已看"
           CurrentEpisodeWatched = true
         elseif data.deferred then
           local message = compose_sync_message(collection_update_message, "已加入待批量同步队列")
@@ -156,11 +156,11 @@ local function start_update_timer_if_needed()
         elseif data.disabled then
           mp.msg.verbose("自动点格子已禁用，跳过同步")
         elseif data.skipped then
-          local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度成功（无需更新）")
+          local message = compose_sync_message(collection_update_message, "同步Bangumi追番进度成功（无需更新）")
           mp.msg.info(message:gsub("\n", " | "))
           mp.osd_message(message)
         else
-          local message = compose_sync_message(collection_update_message, "同步Bangumi追番记录进度成功")
+          local message = compose_sync_message(collection_update_message, "同步Bangumi追番进度成功")
           mp.msg.info(message:gsub("\n", " | "))
           mp.osd_message(message)
           EpisodeStatusText = "已看"
@@ -170,7 +170,7 @@ local function start_update_timer_if_needed()
       end,
       err = function(err)
         mp.msg.error("更新当前集信息失败:", err)
-        mp.osd_message("同步Bangumi追番记录进度失败", 3)
+        mp.osd_message("同步Bangumi追番进度失败", 3)
       end,
     }
   end)

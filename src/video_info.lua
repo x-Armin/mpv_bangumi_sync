@@ -1,77 +1,51 @@
 local mp_utils = require "mp.utils"
+local md5 = require "src.md5"
 
 local M = {}
 
+local HASH_LIMIT = 16 * 1024 * 1024
+local HASH_CHUNK_SIZE = 64 * 1024
+
 -- 计算文件MD5 hash（只读取前16MB）
 function M.get_hash(video_path)
-  local platform = mp.get_property_native("platform")
-  
-  if platform == "windows" then
-    -- Windows: 使用PowerShell脚本文件，避免路径转义问题
-    local temp_dir = os.getenv("TEMP") or os.getenv("TMP") or "."
-    local temp_file = mp_utils.join_path(temp_dir, "mpv_bangumi_sync_md5_" .. os.time() .. "_" .. math.random(10000) .. ".ps1")
-    
-    -- 转义路径中的单引号和美元符号
-    local escaped_path = video_path:gsub("'", "''"):gsub("%$", "`$")
-    -- 使用UTF-8编码写入脚本文件
-    local ps_script = string.format(
-      "$path=[System.IO.Path]::GetFullPath('%s');$fs=[System.IO.File]::OpenRead($path);$bytes=New-Object byte[] 16777216;$count=$fs.Read($bytes,0,16777216);$fs.Close();$md5=[System.Security.Cryptography.MD5]::Create();$hash=$md5.ComputeHash($bytes,0,$count);[System.BitConverter]::ToString($hash).Replace('-','').ToUpper()",
-      escaped_path:gsub("\\", "/")
-    )
-    
-    -- 使用UTF-8 with BOM写入脚本文件（PowerShell需要）
-    local script_file = io.open(temp_file, "wb")
-    if not script_file then
-      mp.msg.error("Failed to create temporary PowerShell script")
-      return ""
-    end
-    
-    -- 写入UTF-8 BOM
-    script_file:write("\239\187\191")
-    script_file:write(ps_script)
-    script_file:close()
-    
-    local result = mp.command_native({
-      name = "subprocess",
-      args = {"powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", temp_file},
-      playback_only = false,
-      capture_stdout = true,
-      capture_stderr = true,
-    })
-    
-    -- 清理临时文件
-    os.remove(temp_file)
-    
-    if result.status == 0 and result.stdout then
-      local hash = result.stdout:match("^%s*(.-)%s*$"):upper()
-      if hash and hash ~= "" and #hash == 32 then
-        mp.msg.info("MD5 hash calculated: " .. hash)
-        return hash
-      end
-    end
-    
-    -- 如果失败，输出错误信息
-    if result and result.stderr then
-      mp.msg.verbose("MD5 calculation error: " .. result.stderr)
-    end
-  else
-    -- Linux/Mac: 使用系统命令
-    local result = mp.command_native({
-      name = "subprocess",
-      args = {"sh", "-c", "head -c 16777216 '" .. video_path:gsub("'", "'\\''") .. "' | md5sum | cut -d' ' -f1"},
-      playback_only = false,
-      capture_stdout = true,
-    })
-    
-    if result.status == 0 and result.stdout then
-      local hash = result.stdout:match("^%s*(.-)%s*$"):upper()
-      if hash and hash ~= "" then
-        return hash
-      end
-    end
+  if type(md5) ~= "table" or not md5.new then
+    mp.msg.error("MD5 module is not available")
+    return ""
   end
-  
-  mp.msg.error("Failed to calculate file hash")
+
+  local hash_path = mp.command_native({"normalize-path", video_path}) or video_path
+  local file, err = io.open(hash_path, "rb")
+  if not file then
+    mp.msg.error("Failed to open file for hash: " .. tostring(err))
+    return ""
+  end
+
+  local ok, hash = pcall(function()
+    local ctx = md5.new()
+    local remaining = HASH_LIMIT
+
+    while remaining > 0 do
+      local read_size = math.min(HASH_CHUNK_SIZE, remaining)
+      local chunk = file:read(read_size)
+      if not chunk or chunk == "" then
+        break
+      end
+
+      ctx:update(chunk)
+      remaining = remaining - #chunk
+    end
+
+    return ctx:finish():upper()
+  end)
+
+  file:close()
+
+  if ok and hash and #hash == 32 then
+    mp.msg.info("MD5 hash calculated: " .. hash)
+    return hash
+  end
+
+  mp.msg.error("Failed to calculate file hash: " .. tostring(hash))
   return ""
 end
 
