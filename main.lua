@@ -3,6 +3,7 @@ local SCRIPT_VERSION = "1.0.0"
 
 local config = require "src.config"
 local sync_context = require "src.services.sync_context"
+local stream_context = require "src.services.stream_context"
 local bangumi_service = require "src.services.bangumi_service"
 local dandanplay_service = require "src.services.dandanplay_service"
 local bangumi_api = require "src.bangumi_api"
@@ -166,6 +167,11 @@ local function get_current_file_path()
   return mp.command_native({"normalize-path", file_path})
 end
 
+local function is_current_stream()
+  local path = mp.get_property("path")
+  return utils.is_protocol(path)
+end
+
 local function resolve_runtime_episode_id(bgm_id)
   if not bgm_id then
     return nil
@@ -277,16 +283,27 @@ update_episode_status_from_cache = function(episodes_data)
 end
 
 local function init(episode_id, opts)
+  opts = opts or {}
   local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
   reset_globals()
   local source = (type(opts) == "table" and opts.source) or (episode_id and "manual" or "auto")
-  sync_context.sync_context({
+  local stream_mode = (type(opts) == "table" and opts.stream == true)
+    or (not episode_id and is_current_stream())
+  local context_service = stream_mode and stream_context or sync_context
+  context_service.sync_context({
     episode_id = episode_id,
     manual_bgm_id = type(opts) == "table" and opts.manual_bgm_id or nil,
     force_refresh = force_refresh,
     source = source,
   }).async {
     resp = function(result)
+      if result and result.status == "select_subject" then
+        local query = result.query or title_guess.get_default_search_query()
+        mp.msg.info("流媒体未绑定Bangumi条目: " .. tostring(query or ""))
+        mp.osd_message("流媒体未绑定Bangumi条目，可在番剧信息中手动匹配", 4)
+        return
+      end
+
       if result and result.status == "select" and result.matches and #result.matches > 1 then
         mp.msg.info "匹配结果不唯一，请手动选择"
         mp.osd_message("匹配结果不唯一，请手动选择", 3)
@@ -336,6 +353,15 @@ local function init(episode_id, opts)
 end
 
 local function bind_manual_bgm_and_reload(bgm_id)
+  if is_current_stream() then
+    local ok, err = stream_context.bind_current_subject(bgm_id)
+    if not ok then
+      return false, err or "SaveFailed"
+    end
+    init(nil, { force_refresh = true, source = "manual_bgm", stream = true })
+    return true, nil
+  end
+
   local file_path = get_current_file_path()
   if not file_path then
     return false, "PathUnavailable"
@@ -636,7 +662,8 @@ apply_auto_mark_mode({force_log = true})
 
 mp.register_event("file-loaded", function()
   if utils.is_protocol(mp.get_property "path") then
-    mp.msg.verbose("Skipping init for protocol:", mp.get_property "path")
+    mp.msg.verbose("Initializing stream playback:", mp.get_property "path")
+    init(nil, { stream = true })
     return
   end
   init()
@@ -704,15 +731,18 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
       return
     end
     local db_record = db.get({ path = file_path })
-    if not db_record or not db_record.bgm_id then
+    local bgm_id = (AnimeInfo and AnimeInfo.bgm_id) or (db_record and db_record.bgm_id)
+    if not bgm_id then
       mp.osd_message("缺少缓存条目信息，无法刷新", 2)
       return
     end
-    local runtime_episode_id = nil
-    if db_record.manual and db_record.bgm_id then
-      runtime_episode_id = resolve_runtime_episode_id(db_record.bgm_id)
-    else
-      runtime_episode_id = db_record.dandanplay_id or resolve_runtime_episode_id(db_record.bgm_id)
+    local runtime_episode_id = CurrentEpisodeInfo and tonumber(CurrentEpisodeInfo.episodeId) or nil
+    if not runtime_episode_id and db_record then
+      if db_record.manual and db_record.bgm_id then
+        runtime_episode_id = resolve_runtime_episode_id(db_record.bgm_id)
+      else
+        runtime_episode_id = db_record.dandanplay_id or resolve_runtime_episode_id(db_record.bgm_id)
+      end
     end
     if not runtime_episode_id then
       mp.osd_message("无法定位当前集，刷新失败", 2)
@@ -720,7 +750,7 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
     end
     local episodes = sync_context.get_user_episodes_cached(
       runtime_episode_id,
-      db_record.bgm_id,
+      bgm_id,
       { force_refresh = true }
     )
     if not episodes then
@@ -792,6 +822,10 @@ mp.register_script_message("bgm-open-search", function()
 end)
 
 mp.register_script_message("bgm-open-dandan-search", function()
+  if is_current_stream() then
+    mp.commandv("script-message", "bgm-open-bgm-subject-search")
+    return
+  end
   MatchResults = nil
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_manual_source")
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_match")
@@ -936,7 +970,7 @@ mp.register_script_message("bgm-search-subjects", function(query)
     search_debounce = "submit",
     search_suggestion = query,
     on_search = { "script-message-to", mp.get_script_name(), "bgm-search-subjects" },
-    footnote = "选择条目后会绑定当前目录",
+    footnote = is_current_stream() and "选择条目后会绑定当前流媒体标题" or "选择条目后会绑定当前目录",
     items = items,
   })
 end)
@@ -955,10 +989,14 @@ mp.register_script_message("bgm-select-subject", function(subject_id)
       mp.osd_message("无法获取当前文件路径", 2)
       return
     end
+    if err_code == "TitleUnavailable" then
+      mp.osd_message("无法解析当前流媒体标题", 2)
+      return
+    end
     mp.osd_message("保存Bangumi目录绑定失败", 2)
     return
   end
-  mp.osd_message("已绑定当前目录Bangumi条目", 2)
+  mp.osd_message(is_current_stream() and "已绑定当前流媒体Bangumi条目" or "已绑定当前目录Bangumi条目", 2)
 end)
 
 mp.register_script_message("bgm-search-episodes", function(anime_title, anime_id)
@@ -1032,6 +1070,10 @@ end)
 
 mp.register_script_message("manual-match", function()
   if UoscAvailable then
+    if is_current_stream() then
+      ui_menu.open_subject_search_menu(title_guess.get_default_search_query())
+      return
+    end
     if MatchResults then
       ui_menu.open_match_menu(MatchResults)
       return
@@ -1045,6 +1087,11 @@ mp.register_script_message("manual-match", function()
       if err_code == "PathUnavailable" then
         mp.msg.error("无法获取当前文件路径")
         mp.osd_message("无法获取当前文件路径", 3)
+        return
+      end
+      if err_code == "TitleUnavailable" then
+        mp.msg.error("无法解析当前流媒体标题")
+        mp.osd_message("无法解析当前流媒体标题", 3)
         return
       end
       mp.msg.error("保存Bangumi目录绑定失败")
@@ -1166,6 +1213,7 @@ mp.register_script_message("manual-match", function()
     input.terminate()
     input.get {
       prompt = "请输入Bangumi关键词：",
+      default_text = title_guess.get_default_search_query(),
       submit = function(text)
         local res = bangumi_api.search_subjects(text, { limit = 20, type_filter = { 2 } })
         if not res or tonumber(res.status_code or 0) >= 400 or not res.body then
@@ -1203,6 +1251,11 @@ mp.register_script_message("manual-match", function()
   end
 
   mp.set_property("pause", "yes")
+  if is_current_stream() then
+    start_bgm_search()
+    return
+  end
+
   if not MatchResults then
     open_source_menu()
     return
