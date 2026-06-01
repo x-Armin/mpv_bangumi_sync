@@ -11,7 +11,7 @@ local METADATA_PATH = mp_utils.join_path(paths.DATA_PATH, "metadata")
 local function ensure_metadata_dir()
   local info = mp_utils.file_info(METADATA_PATH)
   if not info or not info.is_dir then
-    os.execute('mkdir "' .. METADATA_PATH .. '"')
+    paths.ensure_dir(METADATA_PATH)
   end
 end
 
@@ -345,9 +345,9 @@ function M.set_episode_info(episode_id, data)
   
   local info = mp_utils.file_info(dir_path)
   if not info or not info.is_dir then
-    os.execute('mkdir "' .. dir_path .. '"')
+    paths.ensure_dir(dir_path)
   end
-  
+
   local info_path = mp_utils.join_path(dir_path, tostring(episode_id) .. ".json")
   local file = io.open(info_path, "w")
   if not file then
