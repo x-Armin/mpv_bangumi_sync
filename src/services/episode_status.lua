@@ -138,6 +138,9 @@ function M.compute(current_episode_info, episodes_data)
     status_value = status,
     progress = {watched = watched, total = total},
     episode_info = updated_info,
+    episode_item = target,
+    bgm_episode_id = target and target.episode and tonumber(target.episode.id) or nil,
+    match_mode = match_mode,
   }
 end
 
