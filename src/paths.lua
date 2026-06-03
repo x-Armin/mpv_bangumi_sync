@@ -1,6 +1,136 @@
 local mp_utils = require "mp.utils"
 
 local M = {}
+local windows_fs = nil
+
+local function get_windows_fs()
+  if windows_fs ~= nil then
+    return windows_fs
+  end
+
+  local ok, ffi = pcall(require, "ffi")
+  if not ok then
+    windows_fs = false
+    return nil
+  end
+
+  ffi.cdef[[
+    typedef int BOOL;
+    typedef unsigned int UINT;
+    int MultiByteToWideChar(UINT CodePage, unsigned long dwFlags, const char* lpMultiByteStr,
+      int cbMultiByte, uint16_t* lpWideCharStr, int cchWideChar);
+    BOOL CreateDirectoryW(const uint16_t* lpPathName, void* lpSecurityAttributes);
+    BOOL DeleteFileW(const uint16_t* lpFileName);
+    BOOL RemoveDirectoryW(const uint16_t* lpPathName);
+    unsigned long GetLastError(void);
+  ]]
+
+  windows_fs = {
+    ffi = ffi,
+    kernel32 = ffi.load("kernel32"),
+  }
+  return windows_fs
+end
+
+local function utf8_to_wide(text)
+  local fs = get_windows_fs()
+  if not fs then
+    return nil
+  end
+
+  local size = fs.kernel32.MultiByteToWideChar(65001, 0, text, -1, nil, 0)
+  if size <= 0 then
+    return nil
+  end
+
+  local buffer = fs.ffi.new("uint16_t[?]", size)
+  if fs.kernel32.MultiByteToWideChar(65001, 0, text, -1, buffer, size) <= 0 then
+    return nil
+  end
+  return buffer
+end
+
+local function create_windows_dir(path)
+  local fs = get_windows_fs()
+  if not fs then
+    return false
+  end
+
+  local wide = utf8_to_wide(path:gsub("/", "\\"))
+  if not wide then
+    return false
+  end
+
+  if fs.kernel32.CreateDirectoryW(wide, nil) ~= 0 then
+    return true
+  end
+
+  return fs.kernel32.GetLastError() == 183
+end
+
+local function delete_windows_file(path)
+  local fs = get_windows_fs()
+  if not fs then
+    return false
+  end
+
+  local wide = utf8_to_wide(path:gsub("/", "\\"))
+  if not wide then
+    return false
+  end
+
+  if fs.kernel32.DeleteFileW(wide) ~= 0 then
+    return true
+  end
+
+  local err = fs.kernel32.GetLastError()
+  return err == 2 or err == 3
+end
+
+local function remove_windows_dir(path)
+  local fs = get_windows_fs()
+  if not fs then
+    return false
+  end
+
+  local wide = utf8_to_wide(path:gsub("/", "\\"))
+  if not wide then
+    return false
+  end
+
+  if fs.kernel32.RemoveDirectoryW(wide) ~= 0 then
+    return true
+  end
+
+  local err = fs.kernel32.GetLastError()
+  return err == 2 or err == 3
+end
+
+local function is_windows_root(path)
+  return path:match("^%a:/?$") ~= nil or path == "/" or path == ""
+end
+
+local function remove_windows_tree(path)
+  local info = mp_utils.file_info(path)
+  if not info then
+    return true
+  end
+  if not info.is_dir then
+    return delete_windows_file(path)
+  end
+
+  local entries = mp_utils.readdir(path, "all") or {}
+  for _, name in ipairs(entries) do
+    if name ~= "." and name ~= ".." then
+      local child = mp_utils.join_path(path, name)
+      if not remove_windows_tree(child) then
+        return false
+      end
+    end
+  end
+
+  return remove_windows_dir(path)
+end
 
 -- 获取mpv配置目录（portable_config或标准配置目录）
 local function get_mpv_config_dir()
@@ -58,7 +188,6 @@ function M.get_data_path()
   )
 end
 
--- 确保目录存在
 function M.ensure_dir(path)
   if not path or path == "" then
     mp.msg.error("ensure_dir: path is nil or empty")
@@ -67,23 +196,61 @@ function M.ensure_dir(path)
   
   -- 规范化路径分隔符
   path = path:gsub("\\", "/")
-  
-  -- 检查目录是否已存在
+
   local info = mp_utils.file_info(path)
   if info and info.is_dir then
     return
   end
-  
-  -- 使用更简单的方法创建目录
+
+  local parent = path:match("^(.+)/[^/]+$")
+  if parent and parent ~= path and not is_windows_root(parent) then
+    M.ensure_dir(parent)
+  end
+
   local platform = mp.get_property_native("platform")
   if platform == "windows" then
-    -- Windows: 使用 mkdir 命令
-    path = path:gsub("/", "\\")
-    os.execute('if not exist "' .. path .. '" mkdir "' .. path .. '"')
+    if not create_windows_dir(path) then
+      mp.msg.error("ensure_dir: failed to create directory: " .. tostring(path))
+    end
   else
     -- Linux/Mac: 使用 mkdir -p
     os.execute('mkdir -p "' .. path .. '"')
   end
+end
+
+-- 删除目录
+function M.remove_dir(path)
+  if not path or path == "" then
+    mp.msg.error("remove_dir: path is nil or empty")
+    return false
+  end
+
+  path = path:gsub("\\", "/")
+  if is_windows_root(path) then
+    mp.msg.error("remove_dir: refuse to remove root path: " .. tostring(path))
+    return false
+  end
+
+  local info = mp_utils.file_info(path)
+  if not info then
+    return true
+  end
+  if not info.is_dir then
+    mp.msg.error("remove_dir: path is not a directory: " .. tostring(path))
+    return false
+  end
+
+  local platform = mp.get_property_native("platform")
+  if platform == "windows" then
+    if remove_windows_tree(path) then
+      return true
+    end
+    mp.msg.error("remove_dir: failed to remove directory: " .. tostring(path))
+    return false
+  end
+
+  os.execute('rm -rf "' .. path .. '"')
+  return true
 end
 
 -- 初始化路径

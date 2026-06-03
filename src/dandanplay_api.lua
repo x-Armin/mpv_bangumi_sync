@@ -1,4 +1,5 @@
 local http = require "src.http"
+local sha256 = require "src.sha256"
 
 local M = {}
 
@@ -6,55 +7,6 @@ local BASE_API = "https://api.dandanplay.net/api/v2/"
 
 local appid_enc = "00fe3838c677af24ede9"
 local secret_enc = "03c95633c0158054fab5d8ddf5cf92aba62ea23f5dd5713c9053481e66872422"
-
--- 生成SHA256签名 (返回Hex字符串)
-local function sha256(data)
-  local platform = mp.get_property_native("platform")
-  
-  if platform == "windows" then
-    -- Windows: 使用PowerShell
-    -- 转义单引号
-    local escaped_data = data:gsub("'", "''")
-    local ps_cmd = string.format(
-      "$bytes = [System.Text.Encoding]::UTF8.GetBytes('%s'); $sha256 = [System.Security.Cryptography.SHA256]::Create(); $hash = $sha256.ComputeHash($bytes); [System.BitConverter]::ToString($hash).Replace('-', '').ToLower()",
-      escaped_data:gsub("\\", "\\\\")
-    )
-    
-    local result = mp.command_native({
-      name = "subprocess",
-      args = {"powershell", "-NoProfile", "-Command", ps_cmd},
-      playback_only = false,
-      capture_stdout = true,
-      capture_stderr = true,
-    })
-    
-    if result.status == 0 and result.stdout then
-      local hash = result.stdout:match("^%s*(.-)%s*$"):lower()
-      if hash and hash ~= "" then
-        return hash
-      end
-    end
-  else
-    -- Linux/Mac: 使用系统命令
-    local escaped_data = data:gsub("'", "'\\''")
-    local result = mp.command_native({
-      name = "subprocess",
-      args = {"sh", "-c", "echo -n '" .. escaped_data .. "' | sha256sum | cut -d' ' -f1"},
-      playback_only = false,
-      capture_stdout = true,
-    })
-    
-    if result.status == 0 and result.stdout then
-      local hash = result.stdout:match("^%s*(.-)%s*$"):lower()
-      if hash and hash ~= "" then
-        return hash
-      end
-    end
-  end
-  
-  mp.msg.error("Failed to calculate SHA256")
-  return ""
-end
 
 -- Hex字符串转Base64 (用于签名)
 local function hex_to_base64(hex)
