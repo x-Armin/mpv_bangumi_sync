@@ -203,7 +203,7 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
   return nil
 end
 
-function M.update_bangumi_collection(anime_info)
+function M.mark_bangumi_collection_watching(anime_info)
   local info = anime_info or AnimeInfo
   if not info or not info.bgm_id then
     mp.msg.error("未匹配到Bangumi ID，更新条目失败")
@@ -269,7 +269,7 @@ function M.prepare_episode_status_update(opts)
 
   local result = {}
   if status == 2 then
-    local collection_resp = M.update_bangumi_collection({bgm_id = subject_id}).execute()
+    local collection_resp = M.mark_bangumi_collection_watching({bgm_id = subject_id}).execute()
     if not collection_resp or collection_resp.error then
       mp.msg.error("收藏状态检测失败，停止更新单集状态")
       return utils.subprocess_err()
@@ -360,7 +360,7 @@ function M.update_episode(opts)
   end
 
   local collection_update_message = nil
-  local collection_resp = M.update_bangumi_collection(info).execute()
+  local collection_resp = M.mark_bangumi_collection_watching(info).execute()
   if collection_resp and collection_resp.update_message then
     collection_update_message = collection_resp.update_message
   elseif not collection_resp then
