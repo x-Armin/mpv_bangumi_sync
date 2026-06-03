@@ -569,11 +569,10 @@ M.update_episode = function(opts)
     return utils.subprocess_err()
   end
 
-  local collection_resp = opts.collection_prepare_result
-    or M.prepare_episode_status_update({
-      subject_id = subject_id,
-      status = status,
-    }).execute()
+  local collection_resp = M.prepare_episode_status_update({
+    subject_id = subject_id,
+    status = status,
+  }).execute()
   if not collection_resp then
     return utils.subprocess_err()
   end
