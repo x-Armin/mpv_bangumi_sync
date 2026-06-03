@@ -529,8 +529,10 @@ M.update_episode = function(opts)
     return utils.subprocess_err()
   end
 
-  local collection_resp = nil
-  if status == 2 then
+  local collection_resp = opts.collection_resp
+  if collection_resp then
+    -- Collection was already checked/updated by the caller to rebuild episode context.
+  elseif status == 2 then
     collection_resp = M.update_bangumi_collection({bgm_id = subject_id}).execute()
     if not collection_resp or collection_resp.error then
       mp.msg.error("收藏状态检测失败，停止更新单集状态")
