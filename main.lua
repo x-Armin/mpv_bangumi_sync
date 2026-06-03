@@ -520,7 +520,7 @@ mark_current_episode_status = function(opts)
   end
 
   local context = CurrentEpContext
-  local collection_resp = nil
+  local collection_prepare_result = nil
   if context and context.matched == true and context.bgm_episode_id then
     local previous_status = context.episode_item and tonumber(context.episode_item.type) or nil
     if previous_status == nil then
@@ -542,13 +542,17 @@ mark_current_episode_status = function(opts)
     and context.bgm_id
     and context.runtime_episode_id
   then
-    collection_resp = bangumi_service.update_bangumi_collection(
-      context.anime_info or {bgm_id = context.bgm_id}
-    ).execute()
-    if collection_resp then
-      refresh_current_ep_context(true)
-      context = CurrentEpContext
+    collection_prepare_result = bangumi_service.prepare_episode_status_update({
+      subject_id = context.bgm_id,
+      status = status,
+    }).execute()
+    if not collection_prepare_result then
+      local message = is_manual and "鏇存柊鍓ч泦鐘舵€佸け璐? or "鍚屾Bangumi杩界暘杩涘害澶辫触"
+      mp.osd_message(message, 3)
+      return false
     end
+    refresh_current_ep_context(true)
+    context = CurrentEpContext
   end
   if not context or context.matched ~= true or not context.bgm_episode_id then
     if is_manual then
@@ -565,7 +569,7 @@ mark_current_episode_status = function(opts)
     status = status,
     storage = context.storage,
     batch = opts.batch == true,
-    collection_resp = collection_resp,
+    collection_prepare_result = collection_prepare_result,
   }).execute()
   if not result then
     local message = is_manual and "更新剧集状态失败" or "同步Bangumi追番进度失败"

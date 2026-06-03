@@ -258,6 +258,46 @@ function M.update_bangumi_collection(anime_info)
 end
 
 -- 获取剧集列表
+function M.prepare_episode_status_update(opts)
+  opts = opts or {}
+  local subject_id = tonumber(opts.subject_id or (opts.anime_info and opts.anime_info.bgm_id))
+  local status = tonumber(opts.status) or 2
+  if not subject_id then
+    mp.msg.error("缺少Bangumi条目ID，无法准备更新单集状态")
+    return utils.subprocess_err()
+  end
+
+  local result = {}
+  if status == 2 then
+    local collection_resp = M.update_bangumi_collection({bgm_id = subject_id}).execute()
+    if not collection_resp or collection_resp.error then
+      mp.msg.error("收藏状态检测失败，停止更新单集状态")
+      return utils.subprocess_err()
+    end
+    result.collection_update_message = collection_resp.update_message
+    result.collection_updated = collection_resp.update_message ~= nil
+  elseif status == 0 then
+    local collection_check = bangumi_api.get_user_collection(subject_id)
+    if collection_check and tonumber(collection_check.status_code or 0) == 404 then
+      result.uncollected = true
+    elseif not collection_check or tonumber(collection_check.status_code or 0) >= 400 then
+      mp.msg.error("收藏状态检测失败，停止更新单集状态")
+      return utils.subprocess_err()
+    end
+  end
+
+  return {
+    execute = function()
+      return result
+    end,
+    async = function(cb)
+      if cb and cb.resp then
+        cb.resp(result)
+      end
+    end,
+  }
+end
+
 function M.fetch_episodes(opts, anime_info)
   local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
   local info = anime_info or AnimeInfo
@@ -529,25 +569,13 @@ M.update_episode = function(opts)
     return utils.subprocess_err()
   end
 
-  local collection_resp = opts.collection_resp
-  if collection_resp then
-    -- Collection was already checked/updated by the caller to rebuild episode context.
-  elseif status == 2 then
-    collection_resp = M.update_bangumi_collection({bgm_id = subject_id}).execute()
-    if not collection_resp or collection_resp.error then
-      mp.msg.error("收藏状态检测失败，停止更新单集状态")
-      return utils.subprocess_err()
-    end
-  else
-    local collection_check = bangumi_api.get_user_collection(subject_id)
-    if collection_check and tonumber(collection_check.status_code or 0) == 404 then
-      collection_resp = {uncollected = true}
-    elseif not collection_check or tonumber(collection_check.status_code or 0) >= 400 then
-      mp.msg.error("收藏状态检测失败，停止更新单集状态")
-      return utils.subprocess_err()
-    else
-      collection_resp = {}
-    end
+  local collection_resp = opts.collection_prepare_result
+    or M.prepare_episode_status_update({
+      subject_id = subject_id,
+      status = status,
+    }).execute()
+  if not collection_resp then
+    return utils.subprocess_err()
   end
   if collection_resp.uncollected then
     local result = {success = false, uncollected = true}
@@ -588,6 +616,7 @@ M.update_episode = function(opts)
     batch_sync_threshold = queue_result.threshold,
     storage_key = storage_config and storage_config.key,
     collection_update_message = collection_resp.update_message,
+    collection_updated = collection_resp.update_message ~= nil,
   }
 
   return {
