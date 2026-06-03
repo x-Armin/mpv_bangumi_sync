@@ -20,6 +20,8 @@ local function get_windows_fs()
     int MultiByteToWideChar(UINT CodePage, unsigned long dwFlags, const char* lpMultiByteStr,
       int cbMultiByte, uint16_t* lpWideCharStr, int cchWideChar);
     BOOL CreateDirectoryW(const uint16_t* lpPathName, void* lpSecurityAttributes);
+    BOOL DeleteFileW(const uint16_t* lpFileName);
+    BOOL RemoveDirectoryW(const uint16_t* lpPathName);
     unsigned long GetLastError(void);
   ]]
 
@@ -66,8 +68,68 @@ local function create_windows_dir(path)
   return fs.kernel32.GetLastError() == 183
 end
 
+local function delete_windows_file(path)
+  local fs = get_windows_fs()
+  if not fs then
+    return false
+  end
+
+  local wide = utf8_to_wide(path:gsub("/", "\\"))
+  if not wide then
+    return false
+  end
+
+  if fs.kernel32.DeleteFileW(wide) ~= 0 then
+    return true
+  end
+
+  local err = fs.kernel32.GetLastError()
+  return err == 2 or err == 3
+end
+
+local function remove_windows_dir(path)
+  local fs = get_windows_fs()
+  if not fs then
+    return false
+  end
+
+  local wide = utf8_to_wide(path:gsub("/", "\\"))
+  if not wide then
+    return false
+  end
+
+  if fs.kernel32.RemoveDirectoryW(wide) ~= 0 then
+    return true
+  end
+
+  local err = fs.kernel32.GetLastError()
+  return err == 2 or err == 3
+end
+
 local function is_windows_root(path)
-  return path:match("^%a:$") ~= nil or path == "/" or path == ""
+  return path:match("^%a:/?$") ~= nil or path == "/" or path == ""
+end
+
+local function remove_windows_tree(path)
+  local info = mp_utils.file_info(path)
+  if not info then
+    return true
+  end
+  if not info.is_dir then
+    return delete_windows_file(path)
+  end
+
+  local entries = mp_utils.readdir(path, "all") or {}
+  for _, name in ipairs(entries) do
+    if name ~= "." and name ~= ".." then
+      local child = mp_utils.join_path(path, name)
+      if not remove_windows_tree(child) then
+        return false
+      end
+    end
+  end
+
+  return remove_windows_dir(path)
 end
 
 -- 获取mpv配置目录（portable_config或标准配置目录）
@@ -154,6 +216,41 @@ function M.ensure_dir(path)
     -- Linux/Mac: 使用 mkdir -p
     os.execute('mkdir -p "' .. path .. '"')
   end
+end
+
+-- 删除目录
+function M.remove_dir(path)
+  if not path or path == "" then
+    mp.msg.error("remove_dir: path is nil or empty")
+    return false
+  end
+
+  path = path:gsub("\\", "/")
+  if is_windows_root(path) then
+    mp.msg.error("remove_dir: refuse to remove root path: " .. tostring(path))
+    return false
+  end
+
+  local info = mp_utils.file_info(path)
+  if not info then
+    return true
+  end
+  if not info.is_dir then
+    mp.msg.error("remove_dir: path is not a directory: " .. tostring(path))
+    return false
+  end
+
+  local platform = mp.get_property_native("platform")
+  if platform == "windows" then
+    if remove_windows_tree(path) then
+      return true
+    end
+    mp.msg.error("remove_dir: failed to remove directory: " .. tostring(path))
+    return false
+  end
+
+  os.execute('rm -rf "' .. path .. '"')
+  return true
 end
 
 -- 初始化路径

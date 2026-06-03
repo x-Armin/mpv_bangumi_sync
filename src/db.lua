@@ -393,17 +393,10 @@ local function remove_metadata_dirs(anime_id)
   if type(anime_id) ~= "number" then
     return 0
   end
-  local platform = (mp and mp.get_property_native and mp.get_property_native("platform")) or ""
   local dir_path = mp_utils.join_path(METADATA_PATH, tostring(anime_id))
   local info = mp_utils.file_info(dir_path)
   if info and info.is_dir then
-    if platform == "windows" then
-      local path = dir_path:gsub("/", "\\")
-      os.execute('rmdir /s /q "' .. path .. '"')
-    else
-      os.execute('rm -rf "' .. dir_path .. '"')
-    end
-    return 1
+    return paths.remove_dir(dir_path) and 1 or 0
   end
   return 0
 end
