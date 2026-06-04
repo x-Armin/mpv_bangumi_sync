@@ -504,6 +504,31 @@ local function parse_text_candidate(raw_title, source, decode)
   return build_title_info(title, season, episode, source, raw_title)
 end
 
+local function parse_option_title_candidate(raw_title, source)
+  raw_title = trim(raw_title)
+  if not raw_title or raw_title == "" then
+    return nil
+  end
+  if raw_title:find("${", 1, true) then
+    return nil
+  end
+
+  local text = raw_title
+  local wrapped = text:match("^%s*《(.-)》")
+    or text:match("^%s*【(.-)】")
+    or text:match("^%s*%[(.-)%]")
+  if wrapped and wrapped ~= "" then
+    return build_title_info(wrapped, parse_season_hint(text), nil, source, raw_title)
+  end
+
+  local title = text:match("^(.-)%s*第%s*%d+%s*[话話集集].*$")
+  if title and title ~= "" then
+    return build_title_info(title, parse_season_hint(text), nil, source, raw_title)
+  end
+
+  return parse_text_candidate(raw_title, source, true)
+end
+
 local function parse_title()
   local path = mp.get_property("path")
   local filename = mp.get_property("filename/no-ext")
@@ -627,14 +652,21 @@ function M.get_current_title_info()
 
   local path = mp.get_property("path")
   local candidates = {}
-  local function add_candidate(value, source, decode)
+  local function add_candidate(value, source, decode, parser)
     if value and value ~= "" then
-      candidates[#candidates + 1] = { value = value, source = source, decode = decode }
+      candidates[#candidates + 1] = { value = value, source = source, decode = decode, parser = parser }
     end
   end
 
+  local is_network = path and utils.is_protocol(path)
+  if is_network then
+    add_candidate(mp.get_property("metadata/by-key/series"), "metadata-series", true)
+    add_candidate(mp.get_property("metadata/by-key/ytdl_playlist_title"), "metadata-ytdl-playlist-title", true)
+    add_candidate(mp.get_property("metadata/by-key/album"), "metadata-album", true)
+    add_candidate(mp.get_property("options/title"), "options-title", true, parse_option_title_candidate)
+  end
+
   add_candidate(mp.get_property("media-title"), "media-title", true)
-  add_candidate(mp.get_property("filename/no-ext"), "filename", false)
 
   if mp.get_property_native then
     local playlist_pos = mp.get_property_number("playlist-pos")
@@ -643,8 +675,10 @@ function M.get_current_title_info()
     add_candidate(item and item.title, "playlist-title", false)
   end
 
+  add_candidate(mp.get_property("filename/no-ext"), "filename", false)
+
   if path and path ~= "" then
-    if utils.is_protocol(path) then
+    if is_network then
       add_candidate(url_tail_decode(path), "url", false)
     else
       local filename = path:match("([^/\\]+)$") or path
@@ -656,7 +690,8 @@ function M.get_current_title_info()
   local title_info = nil
   local episode_info = nil
   for _, candidate in ipairs(candidates) do
-    local info = parse_text_candidate(candidate.value, candidate.source, candidate.decode)
+    local parser = candidate.parser or parse_text_candidate
+    local info = parser(candidate.value, candidate.source, candidate.decode)
     if info and info.normalized_title then
       if not title_info then
         title_info = info
