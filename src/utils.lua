@@ -110,6 +110,20 @@ function M.is_protocol(path)
     return type(path) == 'string' and (path:find('^%a[%w.+-]-://') ~= nil or path:find('^%a[%w.+-]-:%?') ~= nil)
 end
 
+function M.url_decode(value, opts)
+  if value == nil then
+    return nil
+  end
+  opts = opts or {}
+  local decoded = tostring(value):gsub("%%(%x%x)", function(hex)
+    return string.char(tonumber(hex, 16))
+  end)
+  if opts.plus_as_space then
+    decoded = decoded:gsub("+", " ")
+  end
+  return decoded
+end
+
 -- 简单的JSON格式化（用于HTTP请求）
 function M.format_json(data)
   local mp_utils = require "mp.utils"

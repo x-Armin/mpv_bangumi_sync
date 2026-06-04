@@ -9,6 +9,19 @@ local M = {}
 local SEARCH_LIMIT = 10
 local SEARCH_DETAIL_LIMIT = 5
 
+local function first_non_empty(...)
+  for i = 1, select("#", ...) do
+    local value = select(i, ...)
+    if value ~= nil then
+      value = tostring(value):match("^%s*(.-)%s*$")
+      if value ~= "" then
+        return value
+      end
+    end
+  end
+  return nil
+end
+
 local function fetch_subject(bgm_id, opts)
   bgm_id = tonumber(bgm_id)
   if not bgm_id then
@@ -174,9 +187,13 @@ local function build_context(title_info, bgm_id, bgm_source, subject, opts)
   end
 
   subject = subject or fetch_subject(bgm_id) or {}
-  local anime_title = subject.name_cn or subject.name or title_info.title
+  local anime_title = first_non_empty(subject.name_cn, subject.name, title_info.title)
   local episode = target_ep.episode
-  local episode_title = episode.name_cn or episode.name or ("第" .. tostring(title_info.episode_no) .. "话")
+  local episode_title = first_non_empty(
+    episode.name_cn,
+    episode.name,
+    "第" .. tostring(title_info.episode_no) .. "话"
+  )
   local resolved_ep = tonumber(episode.ep) or title_info.episode_no
   local resolved_sort = tonumber(episode.sort)
   local bgm_url = "https://bgm.tv/subject/" .. tostring(bgm_id)

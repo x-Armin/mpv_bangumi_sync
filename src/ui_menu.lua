@@ -4,6 +4,14 @@ local title_guess = require "src.title_guess"
 
 local M = {}
 
+local function non_empty(value)
+  if value == nil then
+    return nil
+  end
+  value = tostring(value):match("^%s*(.-)%s*$")
+  return value ~= "" and value or nil
+end
+
 function M.format_menu_item(message)
   return {
     title = message,
@@ -136,12 +144,17 @@ local function build_info_menu_props(state)
   local CurrentEpisodeInfo = state.CurrentEpisodeInfo
   local EpisodeStatusText = state.EpisodeStatusText
   local EpisodeProgressText = state.EpisodeProgressText
+  local IsNetworkPath = state.IsNetworkPath == true
+  local NetworkModeText = state.NetworkModeText or ""
+  local NetworkModeIcon = "sync_alt"
   local AutoMarkText = state.AutoMarkText or "开启"
   local AutoMarkIcon = (AutoMarkText == "开启") and "toggle_on" or "toggle_off"
   local title_guess_mod = title_guess
 
-  local title = (CurrentEpisodeInfo and CurrentEpisodeInfo.animeTitle) or title_guess_mod.get_default_search_query() or "未获取"
-  local episode_title = (CurrentEpisodeInfo and CurrentEpisodeInfo.episodeTitle) or "未获取"
+  local title = non_empty(CurrentEpisodeInfo and CurrentEpisodeInfo.animeTitle)
+    or non_empty(title_guess_mod.get_default_search_query())
+    or "未获取"
+  local episode_title = non_empty(CurrentEpisodeInfo and CurrentEpisodeInfo.episodeTitle) or "未获取"
   local episode_ep = CurrentEpisodeInfo and CurrentEpisodeInfo.episodeEp
   if type(episode_ep) == "number" and episode_ep > 0 then
     episode_title = string.format("第%d话  %s", episode_ep, episode_title)
@@ -194,6 +207,18 @@ local function build_info_menu_props(state)
       value = { "script-message", "open-bangumi-url" },
       selectable = true},
   }
+  if IsNetworkPath then
+    table.insert(items, {
+      title = "匹配模式：" .. (NetworkModeText ~= "" and NetworkModeText or "未知"),
+      value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
+      selectable = true,
+      keep_open = true,
+      actions = {
+        { name = "toggle_network_mode", icon = NetworkModeIcon, label = "切换匹配模式" },
+      },
+      actions_place = "inside",
+    })
+  end
   return {
     type = "menu_bgm_info",
     title = title,

@@ -31,6 +31,9 @@ StorageConfig = nil
 AutoMarkEnabled = Options.enable_auto_mark ~= false
 AutoMarkText = AutoMarkEnabled and "开启" or "禁用"
 CurrentEpisodeWatched = false
+CurrentNetworkMode = nil
+NetworkModeOverride = nil
+NetworkModeText = ""
 local flush_pending_updates
 local compose_sync_message
 local update_episode_status_from_cache
@@ -70,6 +73,8 @@ end
 
 local function reset_globals()
   reset_current_ep_context()
+  CurrentNetworkMode = nil
+  NetworkModeText = ""
   if UpdateEpisodeTimer then
     UpdateEpisodeTimer:kill()
     UpdateEpisodeTimer = nil
@@ -164,12 +169,90 @@ local function get_current_file_path()
   if not file_path or file_path == "" then
     return nil
   end
+  if utils.is_protocol(file_path) then
+    return utils.url_decode(file_path)
+  end
   return mp.command_native({"normalize-path", file_path})
 end
 
 local function is_current_stream()
   local path = mp.get_property("path")
   return utils.is_protocol(path)
+end
+
+local VIDEO_EXTENSIONS = {
+  mp4 = true,
+  mkv = true,
+  webm = true,
+  avi = true,
+  mov = true,
+  flv = true,
+  ts = true,
+  m2ts = true,
+  mts = true,
+  m4v = true,
+  wmv = true,
+}
+
+local function get_url_host(path)
+  if not path then
+    return nil
+  end
+  local host = tostring(path):match("^%a[%w.+-]-://([^/:?#]+)")
+  return host and host:lower() or nil
+end
+
+local function get_url_path(path)
+  if not path then
+    return ""
+  end
+  return tostring(path):match("^%a[%w.+-]-://[^/?#]+([^?#]*)") or ""
+end
+
+local function has_network_file_extension(path)
+  local url_path = get_url_path(path):lower()
+  local ext = url_path:match("%.([%w%d]+)$")
+  return ext and VIDEO_EXTENSIONS[ext] == true
+end
+
+local function is_network_file_host(path)
+  local host = get_url_host(path)
+  if not host then
+    return false
+  end
+  for _, configured in ipairs(config.config.network_file_hosts or {}) do
+    if host == configured then
+      return true
+    end
+  end
+  return false
+end
+
+local function resolve_network_mode(path)
+  if not utils.is_protocol(path) then
+    return nil
+  end
+  if NetworkModeOverride then
+    return NetworkModeOverride
+  end
+  if has_network_file_extension(path) or is_network_file_host(path) then
+    return "file"
+  end
+  return "stream"
+end
+
+local function update_network_mode_text()
+  if CurrentNetworkMode == "file" then
+    NetworkModeText = "完整文件"
+  elseif CurrentNetworkMode == "stream" then
+    NetworkModeText = "流媒体"
+  else
+    NetworkModeText = ""
+  end
+end
+
+local function is_current_stream_mode()
+  return resolve_network_mode(mp.get_property("path")) == "stream"
 end
 
 local function resolve_runtime_episode_id(bgm_id)
@@ -287,14 +370,26 @@ local function init(episode_id, opts)
   local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
   reset_globals()
   local source = (type(opts) == "table" and opts.source) or (episode_id and "manual" or "auto")
-  local stream_mode = (type(opts) == "table" and opts.stream == true)
-    or (not episode_id and is_current_stream())
+  local current_path = mp.get_property("path")
+  local network_mode = type(opts) == "table" and opts.network_mode or nil
+  if type(opts) == "table" and opts.stream == true then
+    network_mode = "stream"
+  end
+  if not network_mode then
+    network_mode = resolve_network_mode(current_path)
+  end
+  CurrentNetworkMode = network_mode
+  update_network_mode_text()
+  local stream_mode = network_mode == "stream"
+  local network_file_mode = network_mode == "file"
   local context_service = stream_mode and stream_context or sync_context
   context_service.sync_context({
     episode_id = episode_id,
     manual_bgm_id = type(opts) == "table" and opts.manual_bgm_id or nil,
     force_refresh = force_refresh,
     source = source,
+    remote_url = network_file_mode and current_path or nil,
+    remote_path_key = network_file_mode and utils.url_decode(current_path) or nil,
   }).async {
     resp = function(result)
       if result and result.status == "select_subject" then
@@ -353,12 +448,12 @@ local function init(episode_id, opts)
 end
 
 local function bind_manual_bgm_and_reload(bgm_id)
-  if is_current_stream() then
+  if is_current_stream_mode() then
     local ok, err = stream_context.bind_current_subject(bgm_id)
     if not ok then
       return false, err or "SaveFailed"
     end
-    init(nil, { force_refresh = true, source = "manual_bgm", stream = true })
+    init(nil, { force_refresh = true, source = "manual_bgm", network_mode = "stream" })
     return true, nil
   end
 
@@ -372,7 +467,12 @@ local function bind_manual_bgm_and_reload(bgm_id)
     return false, "SaveFailed"
   end
 
-  init(nil, { force_refresh = true, source = "manual_bgm", manual_bgm_id = bgm_id })
+  init(nil, {
+    force_refresh = true,
+    source = "manual_bgm",
+    manual_bgm_id = bgm_id,
+    network_mode = resolve_network_mode(mp.get_property("path")),
+  })
   return true, nil
 end
 
@@ -394,6 +494,8 @@ local function update_info_menu_view()
     EpisodeStatusText = EpisodeStatusText,
     EpisodeProgressText = EpisodeProgressText,
     AutoMarkText = AutoMarkText,
+    IsNetworkPath = is_current_stream(),
+    NetworkModeText = NetworkModeText,
   })
 end
 
@@ -404,6 +506,8 @@ local function get_info_menu_state()
     EpisodeStatusText = EpisodeStatusText,
     EpisodeProgressText = EpisodeProgressText,
     AutoMarkText = AutoMarkText,
+    IsNetworkPath = is_current_stream(),
+    NetworkModeText = NetworkModeText,
   }
 end
 
@@ -655,15 +759,29 @@ local function toggle_auto_mark_from_panel()
   mp.osd_message("自动点格子：" .. AutoMarkText, 2)
 end
 
+local function toggle_network_mode_from_panel()
+  local path = mp.get_property("path")
+  if not utils.is_protocol(path) then
+    return
+  end
+  local current = resolve_network_mode(path)
+  NetworkModeOverride = current == "file" and "stream" or "file"
+  init(nil, {force_refresh = true, source = "network_mode_toggle", network_mode = NetworkModeOverride})
+  mp.osd_message("网络模式：" .. (NetworkModeOverride == "file" and "完整文件" or "流媒体"), 2)
+end
+
 config.on_options_changed(function()
   apply_auto_mark_mode()
 end)
 apply_auto_mark_mode({force_log = true})
 
 mp.register_event("file-loaded", function()
-  if utils.is_protocol(mp.get_property "path") then
-    mp.msg.verbose("Initializing stream playback:", mp.get_property "path")
-    init(nil, { stream = true })
+  NetworkModeOverride = nil
+  local path = mp.get_property "path"
+  local network_mode = resolve_network_mode(path)
+  if network_mode then
+    mp.msg.verbose("Initializing network playback:", path, "mode:", network_mode)
+    init(nil, { network_mode = network_mode })
     return
   end
   init()
@@ -714,6 +832,10 @@ end)
 
 mp.register_script_message("bgm-toggle-auto-mark", function()
   toggle_auto_mark_from_panel()
+end)
+
+mp.register_script_message("bgm-toggle-network-mode", function()
+  toggle_network_mode_from_panel()
 end)
 
 mp.register_script_message("bgm-noop", function() end)
@@ -771,6 +893,11 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
     ui_menu.open_episode_status_menu(get_info_menu_state())
     return
   end
+  if event.action == "toggle_network_mode" then
+    mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
+    toggle_network_mode_from_panel()
+    return
+  end
   if event.action then
     return
   end
@@ -822,7 +949,7 @@ mp.register_script_message("bgm-open-search", function()
 end)
 
 mp.register_script_message("bgm-open-dandan-search", function()
-  if is_current_stream() then
+  if is_current_stream_mode() then
     mp.commandv("script-message", "bgm-open-bgm-subject-search")
     return
   end
@@ -970,7 +1097,7 @@ mp.register_script_message("bgm-search-subjects", function(query)
     search_debounce = "submit",
     search_suggestion = query,
     on_search = { "script-message-to", mp.get_script_name(), "bgm-search-subjects" },
-    footnote = is_current_stream() and "选择条目后会绑定当前流媒体标题" or "选择条目后会绑定当前目录",
+    footnote = is_current_stream_mode() and "选择条目后会绑定当前流媒体标题" or "选择条目后会绑定当前目录",
     items = items,
   })
 end)
@@ -996,7 +1123,7 @@ mp.register_script_message("bgm-select-subject", function(subject_id)
     mp.osd_message("保存Bangumi目录绑定失败", 2)
     return
   end
-  mp.osd_message(is_current_stream() and "已绑定当前流媒体Bangumi条目" or "已绑定当前目录Bangumi条目", 2)
+  mp.osd_message(is_current_stream_mode() and "已绑定当前流媒体Bangumi条目" or "已绑定当前目录Bangumi条目", 2)
 end)
 
 mp.register_script_message("bgm-search-episodes", function(anime_title, anime_id)
@@ -1070,7 +1197,7 @@ end)
 
 mp.register_script_message("manual-match", function()
   if UoscAvailable then
-    if is_current_stream() then
+    if is_current_stream_mode() then
       ui_menu.open_subject_search_menu(title_guess.get_default_search_query())
       return
     end
@@ -1251,7 +1378,7 @@ mp.register_script_message("manual-match", function()
   end
 
   mp.set_property("pause", "yes")
-  if is_current_stream() then
+  if is_current_stream_mode() then
     start_bgm_search()
     return
   end
