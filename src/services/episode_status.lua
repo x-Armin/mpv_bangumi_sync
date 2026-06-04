@@ -1,6 +1,7 @@
 local utils = require "src.utils"
 local db = require "src.db"
 local json_store = require "src.core.json_store"
+local episode_matcher = require "src.episode_matcher"
 
 local M = {}
 
@@ -62,17 +63,6 @@ function M.compute(current_episode_info, episodes_data)
     end
   end
 
-  if not target and type(ep) == "number" and ep > 0 then
-    for _, ep_info in ipairs(episodes) do
-      local current_ep = ep_info and ep_info.episode and tonumber(ep_info.episode.ep) or nil
-      if current_ep and current_ep == ep then
-        target = ep_info
-        match_mode = "ep"
-        break
-      end
-    end
-  end
-
   if not target and type(sort_no) == "number" and sort_no > 0 then
     for _, ep_info in ipairs(episodes) do
       local current_sort = ep_info and ep_info.episode and tonumber(ep_info.episode.sort) or nil
@@ -84,7 +74,15 @@ function M.compute(current_episode_info, episodes_data)
     end
   end
 
-  if not target and ep > 1000 then
+  if not target and type(ep) == "number" and ep > 0 then
+    local match_result = episode_matcher.match_by_number(episodes, ep)
+    if match_result and match_result.target then
+      target = match_result.target
+      match_mode = match_result.mode
+    end
+  end
+
+  if not target then
     local title = current_episode_info.episodeTitle or ""
     local max_conf = 0
     for _, ep_info in ipairs(episodes) do
@@ -97,13 +95,9 @@ function M.compute(current_episode_info, episodes_data)
         match_mode = "fuzzy"
       end
     end
-  elseif not target then
-    for _, ep_info in ipairs(episodes) do
-      if ep_info.episode and tonumber(ep_info.episode.ep) == ep then
-        target = ep_info
-        match_mode = "ep"
-        break
-      end
+    if max_conf < 0.8 then
+      target = nil
+      match_mode = nil
     end
   end
 
@@ -138,6 +132,9 @@ function M.compute(current_episode_info, episodes_data)
     status_value = status,
     progress = {watched = watched, total = total},
     episode_info = updated_info,
+    episode_item = target,
+    bgm_episode_id = target and target.episode and tonumber(target.episode.id) or nil,
+    match_mode = match_mode,
   }
 end
 

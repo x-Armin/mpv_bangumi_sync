@@ -203,7 +203,7 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
   return nil
 end
 
-function M.update_bangumi_collection(anime_info)
+function M.mark_bangumi_collection_watching(anime_info)
   local info = anime_info or AnimeInfo
   if not info or not info.bgm_id then
     mp.msg.error("未匹配到Bangumi ID，更新条目失败")
@@ -224,7 +224,11 @@ function M.update_bangumi_collection(anime_info)
   if not status then
     -- 404，未收藏
     if res.status_code == 404 then
-      bangumi_api.update_user_collection(subject_id, 3)
+      local update_res = bangumi_api.update_user_collection(subject_id, 3)
+      if not update_res or tonumber(update_res.status_code or 0) >= 400 then
+        mp.msg.error("更新用户收藏失败")
+        return utils.subprocess_err()
+      end
       update_message = "条目状态更新：未看 -> 在看"
     end
   else
@@ -232,7 +236,11 @@ function M.update_bangumi_collection(anime_info)
     local status_map = {"想看", nil, nil, "搁置", "抛弃"}
     local update_from = status_map[status]
     if update_from then
-      bangumi_api.update_user_collection(subject_id, 3)
+      local update_res = bangumi_api.update_user_collection(subject_id, 3)
+      if not update_res or tonumber(update_res.status_code or 0) >= 400 then
+        mp.msg.error("更新用户收藏失败")
+        return utils.subprocess_err()
+      end
       update_message = "条目状态更新：" .. update_from .. " -> 在看"
     end
   end
@@ -250,6 +258,46 @@ function M.update_bangumi_collection(anime_info)
 end
 
 -- 获取剧集列表
+function M.prepare_episode_status_update(opts)
+  opts = opts or {}
+  local subject_id = tonumber(opts.subject_id or (opts.anime_info and opts.anime_info.bgm_id))
+  local status = tonumber(opts.status) or 2
+  if not subject_id then
+    mp.msg.error("缺少Bangumi条目ID，无法准备更新单集状态")
+    return utils.subprocess_err()
+  end
+
+  local result = {}
+  if status == 2 then
+    local collection_resp = M.mark_bangumi_collection_watching({bgm_id = subject_id}).execute()
+    if not collection_resp or collection_resp.error then
+      mp.msg.error("收藏状态检测失败，停止更新单集状态")
+      return utils.subprocess_err()
+    end
+    result.collection_update_message = collection_resp.update_message
+    result.collection_updated = collection_resp.update_message ~= nil
+  elseif status == 0 then
+    local collection_check = bangumi_api.get_user_collection(subject_id)
+    if collection_check and tonumber(collection_check.status_code or 0) == 404 then
+      result.uncollected = true
+    elseif not collection_check or tonumber(collection_check.status_code or 0) >= 400 then
+      mp.msg.error("收藏状态检测失败，停止更新单集状态")
+      return utils.subprocess_err()
+    end
+  end
+
+  return {
+    execute = function()
+      return result
+    end,
+    async = function(cb)
+      if cb and cb.resp then
+        cb.resp(result)
+      end
+    end,
+  }
+end
+
 function M.fetch_episodes(opts, anime_info)
   local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
   local info = anime_info or AnimeInfo
@@ -312,7 +360,7 @@ function M.update_episode(opts)
   end
 
   local collection_update_message = nil
-  local collection_resp = M.update_bangumi_collection(info).execute()
+  local collection_resp = M.mark_bangumi_collection_watching(info).execute()
   if collection_resp and collection_resp.update_message then
     collection_update_message = collection_resp.update_message
   elseif not collection_resp then
@@ -494,6 +542,92 @@ function M.update_episode(opts)
       end,
     }
   end
+end
+
+M.update_episode = function(opts)
+  opts = opts or {}
+  local batch = opts.batch == true
+  local status = tonumber(opts.status) or 2
+  if batch and not is_auto_mark_enabled() then
+    return {
+      execute = function()
+        return {disabled = true, skipped = true}
+      end,
+      async = function(cb)
+        if cb and cb.resp then
+          cb.resp({disabled = true, skipped = true})
+        end
+      end,
+    }
+  end
+
+  local subject_id = tonumber(opts.subject_id or (opts.anime_info and opts.anime_info.bgm_id))
+  local episode_id = tonumber(opts.episode_id)
+  local storage_config = resolve_storage_config(opts)
+  if not subject_id or not episode_id then
+    mp.msg.error("缺少Bangumi条目或剧集ID，更新剧集失败")
+    return utils.subprocess_err()
+  end
+
+  local collection_resp = M.prepare_episode_status_update({
+    subject_id = subject_id,
+    status = status,
+  }).execute()
+  if not collection_resp then
+    return utils.subprocess_err()
+  end
+  if collection_resp.uncollected then
+    local result = {success = false, uncollected = true}
+    return {
+      execute = function()
+        return result
+      end,
+      async = function(cb)
+        if cb and cb.resp then
+          cb.resp(result)
+        end
+      end,
+    }
+  end
+
+  local queue_result = nil
+  if batch and status == 2 then
+    queue_result = queue_pending_episode(storage_config, subject_id, episode_id)
+  else
+    local update_res = bangumi_api.update_episode_status(episode_id, status)
+    if not update_res or tonumber(update_res.status_code or 0) >= 400 then
+      mp.msg.error("更新剧集状态失败: " .. tostring(episode_id))
+      return utils.subprocess_err()
+    end
+    queue_result = {
+      queued = false,
+      queued_count = 0,
+      threshold = get_storage_threshold(storage_config),
+    }
+  end
+
+  local result = {
+    success = true,
+    deferred = queue_result.deferred == true,
+    flushed = queue_result.flushed == true,
+    flush_failed = queue_result.flush_failed == true,
+    queued_count = queue_result.queued_count,
+    batch_sync_threshold = queue_result.threshold,
+    storage_key = storage_config and storage_config.key,
+    collection_update_message = collection_resp.update_message,
+    collection_updated = collection_resp.update_message ~= nil,
+  }
+
+  return {
+    execute = function()
+      return result
+    end,
+    async = function(cb)
+      if cb and cb.resp then
+        cb.resp(result)
+      end
+    end,
+  }
 end
 
 -- 打开URL

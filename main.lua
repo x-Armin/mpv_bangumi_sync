@@ -17,6 +17,7 @@ local ui_menu = require "src.ui_menu"
 mp.msg.info(string.format("%s v%s loaded", SCRIPT_NAME, SCRIPT_VERSION))
 
 -- global variables
+CurrentEpContext = nil
 AnimeInfo = nil
 CurrentEpisodeInfo = nil
 EpisodeStatusText = "未获取"
@@ -33,6 +34,7 @@ local flush_pending_updates
 local compose_sync_message
 local update_episode_status_from_cache
 local reconcile_update_timer
+local mark_current_episode_status
 
 local function prune_db_on_start()
   local removed = db.prune({max_age_days = 30, remove_missing = false})
@@ -49,18 +51,28 @@ end)
 
 -- UI/menu helpers moved to src/ui_menu.lua (ui_menu)
 
+local function sync_legacy_globals_from_current_ep_context()
+  local context = CurrentEpContext or {}
+  AnimeInfo = context.anime_info
+  CurrentEpisodeInfo = context.episode_info
+  EpisodeStatusText = context.status_text or "未获取"
+  EpisodeProgressText = context.progress_text or "未获取"
+  EpisodesReady = context.episodes_ready == true
+  StorageConfig = context.storage
+  CurrentEpisodeWatched = context.watched == true
+end
+
+local function reset_current_ep_context()
+  CurrentEpContext = nil
+  sync_legacy_globals_from_current_ep_context()
+end
+
 local function reset_globals()
-  AnimeInfo = nil
-  CurrentEpisodeInfo = nil
-  EpisodeStatusText = "未获取"
-  EpisodeProgressText = "未获取"
-  CurrentEpisodeWatched = false
-  StorageConfig = nil
+  reset_current_ep_context()
   if UpdateEpisodeTimer then
     UpdateEpisodeTimer:kill()
     UpdateEpisodeTimer = nil
   end
-  EpisodesReady = false
   MatchResults = nil
 end
 
@@ -91,10 +103,13 @@ local function stop_update_timer(reason)
 end
 
 local function should_start_update_timer()
+  local context = CurrentEpContext
   return AutoMarkEnabled
-    and EpisodesReady
-    and not CurrentEpisodeWatched
-    and AnimeInfo ~= nil
+    and context ~= nil
+    and context.matched == true
+    and context.episodes_ready == true
+    and context.watched ~= true
+    and context.anime_info ~= nil
 end
 
 local function start_update_timer_if_needed()
@@ -131,48 +146,7 @@ local function start_update_timer_if_needed()
     end
 
     stop_update_timer("到达进度阈值，开始同步")
-    bangumi_service.update_episode({anime_info = AnimeInfo, storage = StorageConfig}).async {
-      resp = function(data)
-        data = data or {}
-        local updated = update_episode_status_from_cache(data and data.episodes_data or nil)
-        if updated then
-          EpisodesReady = true
-        end
-        local collection_update_message = data.collection_update_message
-        if data.flush_failed then
-          local message = compose_sync_message(collection_update_message, "同步Bangumi追番进度失败，已保留待重试")
-          mp.msg.warn(message:gsub("\n", " | "))
-          mp.osd_message(message, 3)
-        elseif data.flushed then
-          local message = compose_sync_message(collection_update_message, "同步Bangumi追番进度成功")
-          mp.msg.info(message:gsub("\n", " | "))
-          mp.osd_message(message)
-          EpisodeStatusText = "已看"
-          CurrentEpisodeWatched = true
-        elseif data.deferred then
-          local message = compose_sync_message(collection_update_message, "已加入待批量同步队列")
-          mp.msg.info(message:gsub("\n", " | "))
-          mp.osd_message(message, 3)
-        elseif data.disabled then
-          mp.msg.verbose("自动点格子已禁用，跳过同步")
-        elseif data.skipped then
-          local message = compose_sync_message(collection_update_message, "同步Bangumi追番进度成功（无需更新）")
-          mp.msg.info(message:gsub("\n", " | "))
-          mp.osd_message(message)
-        else
-          local message = compose_sync_message(collection_update_message, "同步Bangumi追番进度成功")
-          mp.msg.info(message:gsub("\n", " | "))
-          mp.osd_message(message)
-          EpisodeStatusText = "已看"
-          CurrentEpisodeWatched = true
-        end
-        reconcile_update_timer()
-      end,
-      err = function(err)
-        mp.msg.error("更新当前集信息失败:", err)
-        mp.osd_message("同步Bangumi追番进度失败", 3)
-      end,
-    }
+    mark_current_episode_status({status = 2, source = "auto", batch = true})
   end)
 end
 
@@ -215,6 +189,39 @@ compose_sync_message = function(collection_update_message, sync_message)
   return sync_message
 end
 
+local function set_current_ep_context(context)
+  context = context or {}
+  local episode_info = context.episode_info
+  local anime_info = context.anime_info
+  local bgm_id = context.bgm_id or (anime_info and anime_info.bgm_id)
+  local runtime_episode_id = context.episode_id or (episode_info and episode_info.episodeId)
+  if anime_info then
+    anime_info.bgm_id = bgm_id
+    anime_info.bgm_url = context.bgm_url
+  end
+  CurrentEpContext = {
+    matched = false,
+    match_error = nil,
+    anime_info = anime_info,
+    episode_info = episode_info,
+    bgm_id = bgm_id,
+    bgm_url = context.bgm_url,
+    storage = context.storage,
+    runtime_episode_id = runtime_episode_id,
+    episodes_path = runtime_episode_id and db.get_path(runtime_episode_id, "episodes") or nil,
+    episodes_data = context.episodes,
+    episodes_ready = false,
+    bgm_episode_id = episode_info and tonumber(episode_info.bgmEpisodeId) or nil,
+    episode_item = nil,
+    status_text = "未获取",
+    progress_text = "未获取",
+    watched = false,
+  }
+  update_episode_status_from_cache(context.episodes)
+  sync_legacy_globals_from_current_ep_context()
+  return CurrentEpContext
+end
+
 local function log_context_loaded_summary()
   local info = CurrentEpisodeInfo or {}
   local anime_title = info.animeTitle or "未知番剧"
@@ -235,19 +242,37 @@ local function log_context_loaded_summary()
 end
 
 update_episode_status_from_cache = function(episodes_data)
-  local result = episode_status.compute(CurrentEpisodeInfo, episodes_data)
+  local context = CurrentEpContext
+  local current_episode_info = (context and context.episode_info) or CurrentEpisodeInfo
+  local result = episode_status.compute(current_episode_info, episodes_data)
   if not result then
-    CurrentEpisodeWatched = false
+    if context then
+      context.matched = false
+      context.match_error = "EpisodeStatusUnavailable"
+      context.episodes_data = episodes_data or context.episodes_data
+      context.episodes_ready = false
+      context.watched = false
+    end
+    sync_legacy_globals_from_current_ep_context()
     return false
   end
 
   local progress = result.progress or {}
-  EpisodeProgressText = string.format("%d / %d", progress.watched or 0, progress.total or 0)
-  EpisodeStatusText = episode_status.map_status(result.status_value)
-  CurrentEpisodeWatched = tonumber(result.status_value) == 2
-  if result.episode_info then
-    CurrentEpisodeInfo = result.episode_info
+  if not context then
+    CurrentEpContext = {}
+    context = CurrentEpContext
   end
+  context.episodes_data = episodes_data
+  context.episodes_ready = episodes_data ~= nil and episodes_data.data ~= nil
+  context.status_text = episode_status.map_status(result.status_value)
+  context.progress_text = string.format("%d / %d", progress.watched or 0, progress.total or 0)
+  context.watched = tonumber(result.status_value) == 2
+  context.episode_info = result.episode_info or context.episode_info
+  context.episode_item = result.episode_item
+  context.bgm_episode_id = result.bgm_episode_id or (context.episode_info and tonumber(context.episode_info.bgmEpisodeId))
+  context.matched = context.bgm_episode_id ~= nil
+  context.match_error = context.matched and nil or "BangumiEpisodeNotFound"
+  sync_legacy_globals_from_current_ep_context()
   return true
 end
 
@@ -274,19 +299,13 @@ local function init(episode_id, opts)
         return
       end
 
-      CurrentEpisodeInfo = result.context.episode_info
-      local anime_info = result.context.anime_info or {}
-      anime_info.bgm_id = result.context.bgm_id
-      anime_info.bgm_url = result.context.bgm_url
-      AnimeInfo = anime_info
-      StorageConfig = result.context.storage
-      EpisodesReady = update_episode_status_from_cache(result.context.episodes)
+      set_current_ep_context(result.context)
 
       mp.msg.verbose(
         "Bangumi ID:",
-        AnimeInfo.bgm_id,
+        AnimeInfo and AnimeInfo.bgm_id,
         "Bangumi Url:",
-        AnimeInfo.bgm_url
+        AnimeInfo and AnimeInfo.bgm_url
       )
       log_context_loaded_summary()
         reconcile_update_timer()
@@ -468,67 +487,118 @@ local function update_local_episode_status(context, episode_item, status)
   return write_json_file(context.episodes_path, context.episodes_data)
 end
 
-local function set_current_episode_status(status)
-  status = tonumber(status)
+local function refresh_current_ep_context(force_refresh)
+  local context = CurrentEpContext
+  if not context or not context.runtime_episode_id or not context.bgm_id then
+    return false
+  end
+
+  local episodes = sync_context.get_user_episodes_cached(
+    context.runtime_episode_id,
+    context.bgm_id,
+    {force_refresh = force_refresh == true}
+  )
+  if not episodes or not episodes.data then
+    return false
+  end
+
+  context.episodes_data = episodes
+  update_episode_status_from_cache(episodes)
+  return CurrentEpContext and CurrentEpContext.matched == true
+end
+
+mark_current_episode_status = function(opts)
+  opts = opts or {}
+  local status = tonumber(opts.status)
+  local source = opts.source or "manual"
+  local is_manual = source == "manual"
   if status ~= 0 and status ~= 2 then
-    mp.osd_message("无效的剧集状态", 2)
-    return
+    if is_manual then
+      mp.osd_message("无效的剧集状态", 2)
+    end
+    return false
   end
 
-  local context, context_err = get_current_episode_context()
-  if not context then
-    if context_err == "PathUnavailable" then
-      mp.osd_message("无法获取当前文件路径", 2)
-    elseif context_err == "BgmUnavailable" then
-      mp.osd_message("缺少Bangumi条目信息", 2)
+  local context = CurrentEpContext
+  if context and context.matched == true and context.bgm_episode_id then
+    local previous_status = context.episode_item and tonumber(context.episode_item.type) or nil
+    if previous_status == nil then
+      previous_status = context.watched and 2 or nil
+    end
+    if previous_status == status then
+      if is_manual then
+        local current_text = (status == 2) and "已看" or "未看"
+        mp.osd_message("当前已经是" .. current_text, 2)
+      end
+      return true
+    end
+  end
+
+  if not context or context.matched ~= true or not context.bgm_episode_id then
+    if is_manual then
+      mp.osd_message("请先手动匹配当前集", 2)
     else
-      mp.osd_message("无法定位当前集", 2)
+      mp.msg.verbose("自动标记跳过：当前集上下文已失效")
     end
-    return
+    return false
   end
 
-  local bgm_episode_id, episode_item = resolve_current_bgm_episode(context)
-  if not bgm_episode_id then
-    mp.osd_message("无法定位当前集", 2)
-    return
+  local result = bangumi_service.update_episode({
+    subject_id = context.bgm_id,
+    episode_id = context.bgm_episode_id,
+    status = status,
+    storage = context.storage,
+    batch = opts.batch == true,
+  }).execute()
+  if not result then
+    local message = is_manual and "更新剧集状态失败" or "同步Bangumi追番进度失败"
+    mp.osd_message(message, 3)
+    return false
+  end
+  if result.uncollected then
+    if is_manual then
+      mp.osd_message("当前番剧未收藏", 2)
+    end
+    return false
   end
 
-  local previous_status = episode_item and tonumber(episode_item.type) or nil
-  if previous_status == nil then
-    previous_status = CurrentEpisodeWatched and 2 or nil
-  end
-
-  if previous_status == status then
-    local current_text = (status == 2) and "已看" or "未看"
-    mp.osd_message("当前已是" .. current_text, 2)
-    return
-  end
-
-  local res = bangumi_api.update_episode_status(bgm_episode_id, status)
-  if not res or tonumber(res.status_code or 0) >= 400 then
-    mp.msg.error("手动更新剧集状态失败: " .. tostring(bgm_episode_id))
-    mp.osd_message("更新剧集状态失败", 2)
-    return
-  end
-
-  local local_updated = update_local_episode_status(context, episode_item, status)
+  local local_updated = update_local_episode_status(context, context.episode_item, status)
   if not local_updated then
-    local refreshed = sync_context.get_user_episodes_cached(
-      context.runtime_episode_id,
-      context.bgm_id,
-      { force_refresh = true }
-    )
-    if refreshed and refreshed.data then
-      context.episodes_data = refreshed
-    end
+    refresh_current_ep_context(true)
+  else
+    update_episode_status_from_cache(context.episodes_data)
   end
-  update_episode_status_from_cache(context.episodes_data)
-  EpisodesReady = true
+  if CurrentEpContext then
+    CurrentEpContext.episodes_ready = true
+  end
+  sync_legacy_globals_from_current_ep_context()
   reconcile_update_timer()
   update_info_menu_view()
 
-  local status_text = (status == 2) and "已看" or "未看"
-  mp.osd_message("已标记为" .. status_text, 2)
+  local collection_update_message = result.collection_update_message
+  if result.flush_failed then
+    local message = compose_sync_message(collection_update_message, "同步Bangumi追番进度失败，已保留待重试")
+    mp.msg.warn(message:gsub("\n", " | "))
+    mp.osd_message(message, 3)
+  elseif result.deferred then
+    local message = compose_sync_message(collection_update_message, "已加入待批量同步队列")
+    mp.msg.info(message:gsub("\n", " | "))
+    mp.osd_message(message, 3)
+  elseif result.disabled then
+    mp.msg.verbose("自动点格子已禁用，跳过同步")
+  elseif is_manual then
+    local status_text = (status == 2) and "已看" or "未看"
+    mp.osd_message(compose_sync_message(collection_update_message, "已标记为" .. status_text), 2)
+  else
+    local message = compose_sync_message(collection_update_message, "同步Bangumi追番进度成功")
+    mp.msg.info(message:gsub("\n", " | "))
+    mp.osd_message(message)
+  end
+  return true
+end
+
+local function set_current_episode_status(status)
+  mark_current_episode_status({status = status, source = "manual", batch = false})
 end
 
 local function apply_auto_mark_mode(opts)
