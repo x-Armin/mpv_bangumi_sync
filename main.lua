@@ -469,8 +469,8 @@ local function update_local_episode_status(context, episode_item, status)
 end
 
 local function set_current_episode_status(status)
-  status = tonumber(status)
-  if status ~= 0 and status ~= 2 then
+  status = episode_status.normalize_episode_status(status)
+  if not status then
     mp.osd_message("无效的剧集状态", 2)
     return
   end
@@ -495,11 +495,11 @@ local function set_current_episode_status(status)
 
   local previous_status = episode_item and tonumber(episode_item.type) or nil
   if previous_status == nil then
-    previous_status = CurrentEpisodeWatched and 2 or nil
+    previous_status = CurrentEpisodeWatched and episode_status.EPISODE.WATCHED or nil
   end
 
   if previous_status == status then
-    local current_text = (status == 2) and "已看" or "未看"
+    local current_text = (status == episode_status.EPISODE.WATCHED) and "已看" or "未看"
     mp.osd_message("当前已是" .. current_text, 2)
     return
   end
@@ -527,7 +527,7 @@ local function set_current_episode_status(status)
   reconcile_update_timer()
   update_info_menu_view()
 
-  local status_text = (status == 2) and "已看" or "未看"
+  local status_text = (status == episode_status.EPISODE.WATCHED) and "已看" or "未看"
   mp.osd_message("已标记为" .. status_text, 2)
 end
 

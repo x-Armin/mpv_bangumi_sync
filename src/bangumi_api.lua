@@ -2,6 +2,7 @@ local http = require "src.http"
 local mp_utils = require "mp.utils"
 local paths = require "src.paths"
 local config = require "src.config"
+local episode_status = require "src.services.episode_status"
 
 local M = {}
 
@@ -182,7 +183,7 @@ end
 
 -- 更新用户收藏
 function M.update_user_collection(subject_id, status, private)
-  status = status or 3
+  status = status or episode_status.COLLECTION.WATCHING
   private = private or false
   return M.post(
     string.format("/v0/users/-/collections/%d", subject_id),
@@ -205,7 +206,7 @@ end
 
 -- 更新剧集状态
 function M.update_episode_status(episode_id, status)
-  status = status or 2
+  status = status or episode_status.EPISODE.WATCHED
   return M.put(
     string.format("/v0/users/-/collections/-/episodes/%d", episode_id),
     {type = status}
@@ -214,7 +215,7 @@ end
 
 -- 批量更新剧集状态
 function M.update_episodes_status(subject_id, episode_ids, status, opts)
-  status = status or 2
+  status = status or episode_status.EPISODE.WATCHED
   return M.patch(
     string.format("/v0/users/-/collections/%d/episodes", subject_id),
     {episode_id = episode_ids, type = status},

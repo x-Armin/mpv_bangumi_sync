@@ -6,6 +6,7 @@ local sync_context = require "src.services.sync_context"
 local config = require "src.config"
 local episode_matcher = require "src.episode_matcher"
 local storage_gate = require "src.core.storage_gate"
+local episode_status = require "src.services.episode_status"
 
 local M = {}
 
@@ -114,7 +115,7 @@ function M.flush_pending(opts)
           end
           if #ids > 0 then
             table.sort(ids)
-            local res = bangumi_api.update_episodes_status(subject_id, ids, 2, opts)
+            local res = bangumi_api.update_episodes_status(subject_id, ids, episode_status.EPISODE.WATCHED, opts)
             local detached_ok = res and res.detached == true
             if not detached_ok and (not res or not res.status_code or res.status_code == 0 or res.status_code >= 400) then
               mp.msg.error("Batch update episode status failed:", storage_key, subject_id)
@@ -224,15 +225,19 @@ function M.update_bangumi_collection(anime_info)
   if not status then
     -- 404，未收藏
     if res.status_code == 404 then
-      bangumi_api.update_user_collection(subject_id, 3)
+      bangumi_api.update_user_collection(subject_id, episode_status.COLLECTION.WATCHING)
       update_message = "条目状态更新：未看 -> 在看"
     end
   else
     -- 已收藏，检查状态
-    local status_map = {"想看", nil, nil, "搁置", "抛弃"}
+    local status_map = {
+      [episode_status.COLLECTION.WISH] = "想看",
+      [episode_status.COLLECTION.ON_HOLD] = "搁置",
+      [episode_status.COLLECTION.DROPPED] = "抛弃",
+    }
     local update_from = status_map[status]
     if update_from then
-      bangumi_api.update_user_collection(subject_id, 3)
+      bangumi_api.update_user_collection(subject_id, episode_status.COLLECTION.WATCHING)
       update_message = "条目状态更新：" .. update_from .. " -> 在看"
     end
   end
@@ -363,8 +368,8 @@ function M.update_episode(opts)
       return false
     end
     local changed = false
-    if ep_info.type ~= 2 then
-      ep_info.type = 2
+    if ep_info.type ~= episode_status.EPISODE.WATCHED then
+      ep_info.type = episode_status.EPISODE.WATCHED
       changed = true
     end
     return changed

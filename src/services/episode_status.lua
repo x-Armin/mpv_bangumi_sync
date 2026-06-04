@@ -4,13 +4,50 @@ local json_store = require "src.core.json_store"
 
 local M = {}
 
+M.EPISODE = {
+  UNWATCHED = 0,
+  WATCHED = 2,
+}
+
+M.COLLECTION = {
+  WISH = 1,
+  WATCHING = 3,
+  ON_HOLD = 4,
+  DROPPED = 5,
+}
+
+local episode_status_aliases = {
+  ["0"] = M.EPISODE.UNWATCHED,
+  unwatched = M.EPISODE.UNWATCHED,
+  not_watched = M.EPISODE.UNWATCHED,
+  ["2"] = M.EPISODE.WATCHED,
+  watched = M.EPISODE.WATCHED,
+}
+
+function M.normalize_episode_status(status)
+  if type(status) == "number" then
+    if status == M.EPISODE.UNWATCHED or status == M.EPISODE.WATCHED then
+      return status
+    end
+    return nil
+  end
+
+  if type(status) == "string" then
+    local key = status:lower():gsub("%s+", "_"):gsub("-", "_")
+    return episode_status_aliases[key]
+  end
+
+  return nil
+end
+
 function M.map_status(status)
   local status_map = {
-    [0] = "未看",
-    [1] = "想看",
-    [2] = "已看",
-    [3] = "搁置",
-    [4] = "抛弃",
+    [M.EPISODE.UNWATCHED] = "未看",
+    [M.COLLECTION.WISH] = "想看",
+    [M.EPISODE.WATCHED] = "已看",
+    [M.COLLECTION.WATCHING] = "在看",
+    [M.COLLECTION.ON_HOLD] = "搁置",
+    [M.COLLECTION.DROPPED] = "抛弃",
   }
   return status_map[status] or "未知"
 end
@@ -46,7 +83,7 @@ function M.compute(current_episode_info, episodes_data)
   local watched = 0
 
   for _, ep_info in ipairs(episodes) do
-    if ep_info.type == 2 then
+    if ep_info.type == M.EPISODE.WATCHED then
       watched = watched + 1
     end
   end

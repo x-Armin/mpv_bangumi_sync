@@ -106,14 +106,14 @@ function M.open_episode_status_menu(state)
     {
       title = "标记为已看",
       hint = current_status == "已看" and "当前" or nil,
-      value = { "script-message-to", mp.get_script_name(), "bgm-set-episode-status", "2" },
+      value = { "script-message-to", mp.get_script_name(), "bgm-set-episode-status", "watched" },
       keep_open = false,
       selectable = true,
     },
     {
       title = "标记为未看",
       hint = current_status == "未看" and "当前" or nil,
-      value = { "script-message-to", mp.get_script_name(), "bgm-set-episode-status", "0" },
+      value = { "script-message-to", mp.get_script_name(), "bgm-set-episode-status", "unwatched" },
       keep_open = false,
       selectable = true,
     },
