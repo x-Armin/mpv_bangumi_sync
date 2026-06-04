@@ -181,4 +181,7 @@ portable_config/script-data/mpv_bangumi_sync/
 
 番剧信息窗口依赖 [uosc UI 框架](https://github.com/tomasklaen/uosc)。如果使用 [MPV_lazy](https://github.com/hooke007/MPV_lazy) 等内置 uosc 的懒人包，只需安装本插件即可。
 
+感谢[弹弹play](https://www.dandanplay.com/)提供的番剧匹配API
+
+## 其他
 如果需要使用弹幕功能，推荐安装[uosc_danmaku](https://github.com/Tony15246/uosc_danmaku)
