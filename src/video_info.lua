@@ -5,6 +5,8 @@ local M = {}
 
 local HASH_LIMIT = 16 * 1024 * 1024
 local HASH_CHUNK_SIZE = 64 * 1024
+local HASH_RANGE = "0-" .. tostring(HASH_LIMIT - 1)
+local HTTP_CODE_MARKER = "__MPV_BGM_HTTP_CODE__:"
 
 local function calculate_md5_from_chunks(read_chunk)
   if type(md5) ~= "table" or not md5.new then
@@ -73,6 +75,46 @@ local function get_current_resolution()
   return {width, height}
 end
 
+local function fetch_url_hash_range(url)
+  local result = mp.command_native({
+    name = "subprocess",
+    args = {
+      "curl",
+      "-L",
+      "-s",
+      "-S",
+      "--range",
+      HASH_RANGE,
+      "--max-filesize",
+      tostring(HASH_LIMIT),
+      "-w",
+      "\n" .. HTTP_CODE_MARKER .. "%{http_code}",
+      tostring(url),
+    },
+    playback_only = false,
+    capture_stdout = true,
+    capture_stderr = true,
+  })
+  if not result or result.status ~= 0 then
+    mp.msg.error("Failed to fetch URL range for hash: " .. tostring(result and result.stderr or ""))
+    return nil
+  end
+
+  local data, status_code_text = (result.stdout or ""):match("^(.*)\n" .. HTTP_CODE_MARKER .. "(%d%d%d)$")
+  local status_code = tonumber(status_code_text)
+  if status_code ~= 206 then
+    mp.msg.error("URL server does not support byte ranges for hash: HTTP " .. tostring(status_code or "unknown"))
+    return nil
+  end
+
+  data = data or ""
+  if #data > HASH_LIMIT then
+    mp.msg.error("Fetched URL hash range is too large: " .. tostring(#data))
+    return nil
+  end
+  return data
+end
+
 -- 计算文件MD5 hash（只读取前16MB）
 function M.get_hash(video_path)
   local hash_path = mp.command_native({"normalize-path", video_path}) or video_path
@@ -90,21 +132,13 @@ function M.get_hash(video_path)
 end
 
 function M.get_hash_from_url(url)
-  local result = mp.command_native({
-    name = "subprocess",
-    args = {"curl", "-L", "-s", "-S", "--range", "0-16777215", tostring(url)},
-    playback_only = false,
-    capture_stdout = true,
-    capture_stderr = true,
-  })
-  if not result or result.status ~= 0 then
-    mp.msg.error("Failed to fetch URL range for hash: " .. tostring(result and result.stderr or ""))
+  local data = fetch_url_hash_range(url)
+  if not data then
     return ""
   end
 
-  local data = result.stdout or ""
   local offset = 1
-  return calculate_md5_from_chunks(function(read_size)
+  local hash = calculate_md5_from_chunks(function(read_size)
     if offset > #data then
       return nil
     end
@@ -112,6 +146,7 @@ function M.get_hash_from_url(url)
     offset = offset + #chunk
     return chunk
   end)
+  return hash
 end
 
 function M.get_url_content_length(url)

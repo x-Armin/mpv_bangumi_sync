@@ -227,20 +227,6 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
 end
 
 -- 检查视频是否在存储路径中
-local function is_in_storage_path(file_path)
-  local storages = config.config.storages or {}
-  for _, storage in ipairs(storages) do
-    if file_path:find(storage, 1, true) == 1 then
-      return true
-    end
-  end
-  return false
-end
-
-is_in_storage_path = function(file_path)
-  return storage_gate.is_in_storage_path(file_path)
-end
-
 local function resolve_storage(file_path)
   return storage_gate.resolve_storage(file_path)
 end
@@ -528,12 +514,18 @@ local function sync_context_execute(opts)
   local file_path = remote_path_key or (remote_url and utils.url_decode(remote_url)) or get_current_file_path()
   if is_remote_file then
     remote_video_info = remote_video_info or video_info.get_url_info(remote_url or file_path)
-  end
-  local file_info = is_remote_file and {is_file = true} or (file_path and mp_utils.file_info(file_path) or nil)
-  if not file_info or not file_info.is_file then
-    mp.msg.verbose("sync_context: 文件路径无效或不是文件")
-    mp.msg.error("视频路径无效或不是文件")
-    return {status = "error", error = "VideoPathError", reason = "InvalidPath"}
+    if not remote_video_info then
+      mp.msg.verbose("sync_context: 无法获取远端视频信息")
+      mp.msg.error("无法获取远端视频信息")
+      return {status = "error", error = "VideoPathError", reason = "RemoteInfoUnavailable"}
+    end
+  else
+    local file_info = file_path and mp_utils.file_info(file_path) or nil
+    if not file_info or file_info.is_file ~= true then
+      mp.msg.verbose("sync_context: 文件路径无效或不是文件")
+      mp.msg.error("视频路径无效或不是文件")
+      return {status = "error", error = "VideoPathError", reason = "InvalidPath"}
+    end
   end
 
   mp.msg.verbose("sync_context: 已获取文件路径")
@@ -552,9 +544,12 @@ local function sync_context_execute(opts)
     }
   end
 
-  local dir_path, filename = split_file_path(file_path)
-  if is_remote_file and remote_video_info and remote_video_info.filename and remote_video_info.filename ~= "" then
+  local dir_path, filename
+  if is_remote_file then
+    dir_path = select(1, split_file_path(file_path))
     filename = remote_video_info.filename
+  else
+    dir_path, filename = split_file_path(file_path)
   end
 
   local db_record = db.get({path = file_path})
