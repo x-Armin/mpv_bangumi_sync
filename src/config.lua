@@ -12,6 +12,9 @@ Options = {
   -- Bangumi API代理，留空表示不使用代理
   bgm_proxy = "",
 
+  -- Comma separated hosts that should be treated as network files.
+  network_file_hosts = "",
+
   -- Storage group 1. Use semicolon on Windows and colon on Linux/Mac.
   storage1 = "",
 
@@ -115,6 +118,26 @@ local function parse_storages(storages_str)
   return storages
 end
 
+local function parse_comma_list(value)
+  if not value or value == "" then
+    return {}
+  end
+
+  local list = {}
+  local seen = {}
+  for item in tostring(value):gmatch("[^,]+") do
+    item = item:match("^%s*(.-)%s*$")
+    if item ~= "" then
+      item = item:lower()
+      if not seen[item] then
+        list[#list + 1] = item
+        seen[item] = true
+      end
+    end
+  end
+  return list
+end
+
 local function merge_storages(primary, extra)
   local merged = {}
   local seen = {}
@@ -152,11 +175,13 @@ local function apply_options()
   Options.bgm_access_token = normalize_string(Options.bgm_access_token, "")
   Options.bangumi_api = normalize_bangumi_api(Options.bangumi_api)
   Options.bgm_proxy = normalize_string(Options.bgm_proxy, "")
+  Options.network_file_hosts = normalize_string(Options.network_file_hosts, "")
   Options.storage1 = normalize_string(Options.storage1, "")
   Options.storage2 = normalize_string(Options.storage2, "")
   Options.enable_auto_mark = normalize_boolean(Options.enable_auto_mark, true)
   Options.storage1_list = parse_storages(Options.storage1)
   Options.storage2_list = parse_storages(Options.storage2)
+  Options.network_file_hosts_list = parse_comma_list(Options.network_file_hosts)
   Options.all_storages_list = merge_storages(
     Options.storage1_list,
     Options.storage2_list
@@ -183,6 +208,7 @@ local function apply_options()
   public_config.access_token = Options.bgm_access_token
   public_config.bangumi_api = Options.bangumi_api
   public_config.bgm_proxy = Options.bgm_proxy
+  public_config.network_file_hosts = Options.network_file_hosts_list
   public_config.storages = Options.all_storages_list
   public_config.storage1 = Options.storage1_list
   public_config.storage2 = Options.storage2_list

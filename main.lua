@@ -3,6 +3,7 @@ local SCRIPT_VERSION = "1.0.0"
 
 local config = require "src.config"
 local sync_context = require "src.services.sync_context"
+local stream_context = require "src.services.stream_context"
 local bangumi_service = require "src.services.bangumi_service"
 local dandanplay_service = require "src.services.dandanplay_service"
 local bangumi_api = require "src.bangumi_api"
@@ -30,6 +31,9 @@ StorageConfig = nil
 AutoMarkEnabled = Options.enable_auto_mark ~= false
 AutoMarkText = AutoMarkEnabled and "开启" or "禁用"
 CurrentEpisodeWatched = false
+CurrentNetworkMode = nil
+NetworkModeOverride = nil
+NetworkModeText = ""
 local flush_pending_updates
 local compose_sync_message
 local update_episode_status_from_cache
@@ -69,6 +73,8 @@ end
 
 local function reset_globals()
   reset_current_ep_context()
+  CurrentNetworkMode = nil
+  NetworkModeText = ""
   if UpdateEpisodeTimer then
     UpdateEpisodeTimer:kill()
     UpdateEpisodeTimer = nil
@@ -163,7 +169,101 @@ local function get_current_file_path()
   if not file_path or file_path == "" then
     return nil
   end
+  if utils.is_protocol(file_path) then
+    return utils.url_decode(file_path)
+  end
   return mp.command_native({"normalize-path", file_path})
+end
+
+local function get_current_db_path()
+  local file_path = mp.get_property("path")
+  if not file_path or file_path == "" then
+    return nil
+  end
+  if utils.is_protocol(file_path) then
+    return utils.stable_url_key(file_path)
+  end
+  return mp.command_native({"normalize-path", file_path})
+end
+
+local function is_current_stream()
+  local path = mp.get_property("path")
+  return utils.is_protocol(path)
+end
+
+local VIDEO_EXTENSIONS = {
+  mp4 = true,
+  mkv = true,
+  webm = true,
+  avi = true,
+  mov = true,
+  flv = true,
+  ts = true,
+  m2ts = true,
+  mts = true,
+  m4v = true,
+  wmv = true,
+}
+
+local function get_url_host(path)
+  if not path then
+    return nil
+  end
+  local host = tostring(path):match("^%a[%w.+-]-://([^/:?#]+)")
+  return host and host:lower() or nil
+end
+
+local function get_url_path(path)
+  if not path then
+    return ""
+  end
+  return tostring(path):match("^%a[%w.+-]-://[^/?#]+([^?#]*)") or ""
+end
+
+local function has_network_file_extension(path)
+  local url_path = get_url_path(path):lower()
+  local ext = url_path:match("%.([%w%d]+)$")
+  return ext and VIDEO_EXTENSIONS[ext] == true
+end
+
+local function is_network_file_host(path)
+  local host = get_url_host(path)
+  if not host then
+    return false
+  end
+  for _, configured in ipairs(config.config.network_file_hosts or {}) do
+    if host == configured then
+      return true
+    end
+  end
+  return false
+end
+
+local function resolve_network_mode(path)
+  if not utils.is_protocol(path) then
+    return nil
+  end
+  if NetworkModeOverride then
+    return NetworkModeOverride
+  end
+  if has_network_file_extension(path) or is_network_file_host(path) then
+    return "file"
+  end
+  return "stream"
+end
+
+local function update_network_mode_text()
+  if CurrentNetworkMode == "file" then
+    NetworkModeText = "完整文件"
+  elseif CurrentNetworkMode == "stream" then
+    NetworkModeText = "流媒体"
+  else
+    NetworkModeText = ""
+  end
+end
+
+local function is_current_stream_mode()
+  return resolve_network_mode(mp.get_property("path")) == "stream"
 end
 
 local function resolve_runtime_episode_id(bgm_id)
@@ -277,16 +377,39 @@ update_episode_status_from_cache = function(episodes_data)
 end
 
 local function init(episode_id, opts)
+  opts = opts or {}
   local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
   reset_globals()
   local source = (type(opts) == "table" and opts.source) or (episode_id and "manual" or "auto")
-  sync_context.sync_context({
+  local current_path = mp.get_property("path")
+  local network_mode = type(opts) == "table" and opts.network_mode or nil
+  if type(opts) == "table" and opts.stream == true then
+    network_mode = "stream"
+  end
+  if not network_mode then
+    network_mode = resolve_network_mode(current_path)
+  end
+  CurrentNetworkMode = network_mode
+  update_network_mode_text()
+  local stream_mode = network_mode == "stream"
+  local network_file_mode = network_mode == "file"
+  local context_service = stream_mode and stream_context or sync_context
+  context_service.sync_context({
     episode_id = episode_id,
     manual_bgm_id = type(opts) == "table" and opts.manual_bgm_id or nil,
     force_refresh = force_refresh,
     source = source,
+    remote_url = network_file_mode and current_path or nil,
+    remote_path_key = network_file_mode and utils.stable_url_key(current_path) or nil,
   }).async {
     resp = function(result)
+      if result and result.status == "select_subject" then
+        local query = result.query or title_guess.get_default_search_query()
+        mp.msg.info("流媒体未绑定Bangumi条目: " .. tostring(query or ""))
+        mp.osd_message("流媒体未绑定Bangumi条目，可在番剧信息中手动匹配", 4)
+        return
+      end
+
       if result and result.status == "select" and result.matches and #result.matches > 1 then
         mp.msg.info "匹配结果不唯一，请手动选择"
         mp.osd_message("匹配结果不唯一，请手动选择", 3)
@@ -336,7 +459,16 @@ local function init(episode_id, opts)
 end
 
 local function bind_manual_bgm_and_reload(bgm_id)
-  local file_path = get_current_file_path()
+  if is_current_stream_mode() then
+    local ok, err = stream_context.bind_current_subject(bgm_id)
+    if not ok then
+      return false, err or "SaveFailed"
+    end
+    init(nil, { force_refresh = true, source = "manual_bgm", network_mode = "stream" })
+    return true, nil
+  end
+
+  local file_path = get_current_db_path()
   if not file_path then
     return false, "PathUnavailable"
   end
@@ -346,7 +478,12 @@ local function bind_manual_bgm_and_reload(bgm_id)
     return false, "SaveFailed"
   end
 
-  init(nil, { force_refresh = true, source = "manual_bgm", manual_bgm_id = bgm_id })
+  init(nil, {
+    force_refresh = true,
+    source = "manual_bgm",
+    manual_bgm_id = bgm_id,
+    network_mode = resolve_network_mode(mp.get_property("path")),
+  })
   return true, nil
 end
 
@@ -368,6 +505,8 @@ local function update_info_menu_view()
     EpisodeStatusText = EpisodeStatusText,
     EpisodeProgressText = EpisodeProgressText,
     AutoMarkText = AutoMarkText,
+    IsNetworkPath = is_current_stream(),
+    NetworkModeText = NetworkModeText,
   })
 end
 
@@ -378,17 +517,9 @@ local function get_info_menu_state()
     EpisodeStatusText = EpisodeStatusText,
     EpisodeProgressText = EpisodeProgressText,
     AutoMarkText = AutoMarkText,
+    IsNetworkPath = is_current_stream(),
+    NetworkModeText = NetworkModeText,
   }
-end
-
-local function read_json_file(path)
-  local file = path and io.open(path, "r") or nil
-  if not file then
-    return nil
-  end
-  local content = file:read("*all")
-  file:close()
-  return mp_utils.parse_json(content)
 end
 
 local function write_json_file(path, data)
@@ -399,81 +530,6 @@ local function write_json_file(path, data)
   file:write(mp_utils.format_json(data) or "{}")
   file:close()
   return true
-end
-
-local function get_current_episode_context(opts)
-  opts = opts or {}
-  local file_path = get_current_file_path()
-  if not file_path then
-    return nil, "PathUnavailable"
-  end
-
-  local db_record = db.get({ path = file_path })
-  local bgm_id = (AnimeInfo and AnimeInfo.bgm_id) or (db_record and db_record.bgm_id)
-  if not bgm_id then
-    return nil, "BgmUnavailable"
-  end
-
-  local runtime_episode_id = CurrentEpisodeInfo and tonumber(CurrentEpisodeInfo.episodeId) or nil
-  if not runtime_episode_id then
-    if db_record and db_record.manual and db_record.bgm_id then
-      runtime_episode_id = resolve_runtime_episode_id(db_record.bgm_id)
-    elseif db_record then
-      runtime_episode_id = db_record.dandanplay_id or resolve_runtime_episode_id(db_record.bgm_id)
-    end
-  end
-  if not runtime_episode_id then
-    return nil, "EpisodeUnavailable"
-  end
-
-  local episodes_path = db.get_path(runtime_episode_id, "episodes")
-  local episodes_data = nil
-  if opts.force_refresh ~= true then
-    episodes_data = read_json_file(episodes_path)
-  end
-  if not episodes_data or not episodes_data.data then
-    episodes_data = sync_context.get_user_episodes_cached(
-      runtime_episode_id,
-      bgm_id,
-      { force_refresh = opts.force_refresh == true }
-    )
-  end
-  if not episodes_data or not episodes_data.data then
-    return nil, "EpisodesUnavailable"
-  end
-
-  return {
-    bgm_id = bgm_id,
-    runtime_episode_id = runtime_episode_id,
-    episodes_path = episodes_path,
-    episodes_data = episodes_data,
-  }
-end
-
-local function resolve_current_bgm_episode(context)
-  if not context or not context.episodes_data then
-    return nil, nil
-  end
-
-  local bgm_episode_id = CurrentEpisodeInfo and tonumber(CurrentEpisodeInfo.bgmEpisodeId) or nil
-  if not bgm_episode_id then
-    local result = episode_status.compute(CurrentEpisodeInfo, context.episodes_data)
-    if result and result.episode_info then
-      CurrentEpisodeInfo = result.episode_info
-      bgm_episode_id = tonumber(CurrentEpisodeInfo.bgmEpisodeId)
-    end
-  end
-  if not bgm_episode_id then
-    return nil, nil
-  end
-
-  for _, ep_info in ipairs(context.episodes_data.data or {}) do
-    local current_id = ep_info and ep_info.episode and tonumber(ep_info.episode.id) or nil
-    if current_id and current_id == bgm_episode_id then
-      return bgm_episode_id, ep_info
-    end
-  end
-  return bgm_episode_id, nil
 end
 
 local function update_local_episode_status(context, episode_item, status)
@@ -629,14 +685,29 @@ local function toggle_auto_mark_from_panel()
   mp.osd_message("自动点格子：" .. AutoMarkText, 2)
 end
 
+local function toggle_network_mode_from_panel()
+  local path = mp.get_property("path")
+  if not utils.is_protocol(path) then
+    return
+  end
+  local current = resolve_network_mode(path)
+  NetworkModeOverride = current == "file" and "stream" or "file"
+  init(nil, {force_refresh = true, source = "network_mode_toggle", network_mode = NetworkModeOverride})
+  mp.osd_message("网络模式：" .. (NetworkModeOverride == "file" and "完整文件" or "流媒体"), 2)
+end
+
 config.on_options_changed(function()
   apply_auto_mark_mode()
 end)
 apply_auto_mark_mode({force_log = true})
 
 mp.register_event("file-loaded", function()
-  if utils.is_protocol(mp.get_property "path") then
-    mp.msg.verbose("Skipping init for protocol:", mp.get_property "path")
+  NetworkModeOverride = nil
+  local path = mp.get_property "path"
+  local network_mode = resolve_network_mode(path)
+  if network_mode then
+    mp.msg.verbose("Initializing network playback:", path, "mode:", network_mode)
+    init(nil, { network_mode = network_mode })
     return
   end
   init()
@@ -689,6 +760,10 @@ mp.register_script_message("bgm-toggle-auto-mark", function()
   toggle_auto_mark_from_panel()
 end)
 
+mp.register_script_message("bgm-toggle-network-mode", function()
+  toggle_network_mode_from_panel()
+end)
+
 mp.register_script_message("bgm-noop", function() end)
 
 mp.register_script_message("bgm-info-menu-event", function(payload)
@@ -698,21 +773,24 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
   end
 
   if event.action == "refresh" then
-    local file_path = get_current_file_path()
+    local file_path = get_current_db_path()
     if not file_path then
       mp.osd_message("无法获取当前文件路径", 2)
       return
     end
     local db_record = db.get({ path = file_path })
-    if not db_record or not db_record.bgm_id then
+    local bgm_id = (AnimeInfo and AnimeInfo.bgm_id) or (db_record and db_record.bgm_id)
+    if not bgm_id then
       mp.osd_message("缺少缓存条目信息，无法刷新", 2)
       return
     end
-    local runtime_episode_id = nil
-    if db_record.manual and db_record.bgm_id then
-      runtime_episode_id = resolve_runtime_episode_id(db_record.bgm_id)
-    else
-      runtime_episode_id = db_record.dandanplay_id or resolve_runtime_episode_id(db_record.bgm_id)
+    local runtime_episode_id = CurrentEpisodeInfo and tonumber(CurrentEpisodeInfo.episodeId) or nil
+    if not runtime_episode_id and db_record then
+      if db_record.manual and db_record.bgm_id then
+        runtime_episode_id = resolve_runtime_episode_id(db_record.bgm_id)
+      else
+        runtime_episode_id = db_record.dandanplay_id or resolve_runtime_episode_id(db_record.bgm_id)
+      end
     end
     if not runtime_episode_id then
       mp.osd_message("无法定位当前集，刷新失败", 2)
@@ -720,7 +798,7 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
     end
     local episodes = sync_context.get_user_episodes_cached(
       runtime_episode_id,
-      db_record.bgm_id,
+      bgm_id,
       { force_refresh = true }
     )
     if not episodes then
@@ -739,6 +817,11 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
   if event.action == "edit_status" then
     mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
     ui_menu.open_episode_status_menu(get_info_menu_state())
+    return
+  end
+  if event.action == "toggle_network_mode" then
+    mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
+    toggle_network_mode_from_panel()
     return
   end
   if event.action then
@@ -792,6 +875,10 @@ mp.register_script_message("bgm-open-search", function()
 end)
 
 mp.register_script_message("bgm-open-dandan-search", function()
+  if is_current_stream_mode() then
+    mp.commandv("script-message", "bgm-open-bgm-subject-search")
+    return
+  end
   MatchResults = nil
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_manual_source")
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_match")
@@ -936,7 +1023,7 @@ mp.register_script_message("bgm-search-subjects", function(query)
     search_debounce = "submit",
     search_suggestion = query,
     on_search = { "script-message-to", mp.get_script_name(), "bgm-search-subjects" },
-    footnote = "选择条目后会绑定当前目录",
+    footnote = is_current_stream_mode() and "选择条目后会绑定当前流媒体标题" or "选择条目后会绑定当前目录",
     items = items,
   })
 end)
@@ -955,10 +1042,14 @@ mp.register_script_message("bgm-select-subject", function(subject_id)
       mp.osd_message("无法获取当前文件路径", 2)
       return
     end
+    if err_code == "TitleUnavailable" then
+      mp.osd_message("无法解析当前流媒体标题", 2)
+      return
+    end
     mp.osd_message("保存Bangumi目录绑定失败", 2)
     return
   end
-  mp.osd_message("已绑定当前目录Bangumi条目", 2)
+  mp.osd_message(is_current_stream_mode() and "已绑定当前流媒体Bangumi条目" or "已绑定当前目录Bangumi条目", 2)
 end)
 
 mp.register_script_message("bgm-search-episodes", function(anime_title, anime_id)
@@ -1032,6 +1123,10 @@ end)
 
 mp.register_script_message("manual-match", function()
   if UoscAvailable then
+    if is_current_stream_mode() then
+      ui_menu.open_subject_search_menu(title_guess.get_default_search_query())
+      return
+    end
     if MatchResults then
       ui_menu.open_match_menu(MatchResults)
       return
@@ -1045,6 +1140,11 @@ mp.register_script_message("manual-match", function()
       if err_code == "PathUnavailable" then
         mp.msg.error("无法获取当前文件路径")
         mp.osd_message("无法获取当前文件路径", 3)
+        return
+      end
+      if err_code == "TitleUnavailable" then
+        mp.msg.error("无法解析当前流媒体标题")
+        mp.osd_message("无法解析当前流媒体标题", 3)
         return
       end
       mp.msg.error("保存Bangumi目录绑定失败")
@@ -1166,6 +1266,7 @@ mp.register_script_message("manual-match", function()
     input.terminate()
     input.get {
       prompt = "请输入Bangumi关键词：",
+      default_text = title_guess.get_default_search_query(),
       submit = function(text)
         local res = bangumi_api.search_subjects(text, { limit = 20, type_filter = { 2 } })
         if not res or tonumber(res.status_code or 0) >= 400 or not res.body then
@@ -1203,6 +1304,11 @@ mp.register_script_message("manual-match", function()
   end
 
   mp.set_property("pause", "yes")
+  if is_current_stream_mode() then
+    start_bgm_search()
+    return
+  end
+
   if not MatchResults then
     open_source_menu()
     return

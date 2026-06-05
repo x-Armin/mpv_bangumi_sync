@@ -15,6 +15,19 @@ local M = {}
 local INFO_CACHE_MAX_AGE = 3600 * 24
 local EPISODES_CACHE_MAX_AGE = 3600 * 4
 
+local function first_non_empty(...)
+  for i = 1, select("#", ...) do
+    local value = select(i, ...)
+    if value ~= nil then
+      value = tostring(value):match("^%s*(.-)%s*$")
+      if value ~= "" then
+        return value
+      end
+    end
+  end
+  return nil
+end
+
 local function get_current_file_path()
   local file_path = mp.get_property("path")
   if not file_path then
@@ -214,20 +227,6 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
 end
 
 -- 检查视频是否在存储路径中
-local function is_in_storage_path(file_path)
-  local storages = config.config.storages or {}
-  for _, storage in ipairs(storages) do
-    if file_path:find(storage, 1, true) == 1 then
-      return true
-    end
-  end
-  return false
-end
-
-is_in_storage_path = function(file_path)
-  return storage_gate.is_in_storage_path(file_path)
-end
-
 local function resolve_storage(file_path)
   return storage_gate.resolve_storage(file_path)
 end
@@ -245,8 +244,8 @@ local function construct_episode_match(episode_id, opts)
 end
 
 -- 获取匹配信息
-local function get_match_info(video_path)
-  local info = video_info.get_info(video_path)
+local function get_match_info(video_path, prepared_info)
+  local info = prepared_info or video_info.get_info(video_path)
   if not info then
     mp.msg.verbose("match: video_info not available")
     mp.msg.error("无法获取视频信息: " .. video_path)
@@ -498,6 +497,10 @@ local function sync_context_execute(opts)
   local source = type(opts) == "table" and opts.source or nil
   local ensure_episodes = type(opts) ~= "table" or opts.ensure_episodes ~= false
   local refresh = force_refresh or source == "manual" or source == "manual_bgm"
+  local remote_url = type(opts) == "table" and opts.remote_url or nil
+  local remote_path_key = type(opts) == "table" and opts.remote_path_key or nil
+  local remote_video_info = type(opts) == "table" and opts.remote_video_info or nil
+  local is_remote_file = remote_url ~= nil or remote_video_info ~= nil
 
   mp.msg.verbose(
     string.format(
@@ -508,16 +511,30 @@ local function sync_context_execute(opts)
       tostring(force_episode_id)
     )
   )
-  local file_path = get_current_file_path()
-  local file_info = file_path and mp_utils.file_info(file_path) or nil
-  if not file_info or not file_info.is_file then
-    mp.msg.verbose("sync_context: 文件路径无效或不是文件")
-    mp.msg.error("视频路径无效或不是文件")
-    return {status = "error", error = "VideoPathError", reason = "InvalidPath"}
+  local file_path = remote_path_key or (remote_url and utils.stable_url_key(remote_url)) or get_current_file_path()
+  if is_remote_file then
+    remote_video_info = remote_video_info or video_info.get_url_info(remote_url or file_path)
+    if not remote_video_info then
+      mp.msg.verbose("sync_context: 无法获取远端视频信息")
+      mp.msg.error("无法获取远端视频信息")
+      return {status = "error", error = "VideoPathError", reason = "RemoteInfoUnavailable"}
+    end
+  else
+    local file_info = file_path and mp_utils.file_info(file_path) or nil
+    if not file_info or file_info.is_file ~= true then
+      mp.msg.verbose("sync_context: 文件路径无效或不是文件")
+      mp.msg.error("视频路径无效或不是文件")
+      return {status = "error", error = "VideoPathError", reason = "InvalidPath"}
+    end
   end
 
   mp.msg.verbose("sync_context: 已获取文件路径")
-  local storage_config = resolve_storage(file_path)
+  local storage_config = is_remote_file and {
+    key = "network_file",
+    storages = {},
+    batch_sync_threshold = 1,
+    matched_storage = "network_file",
+  } or resolve_storage(file_path)
   if not storage_config then
     mp.msg.info("sync_context: 文件不在配置的存储路径内")
     return {
@@ -527,7 +544,13 @@ local function sync_context_execute(opts)
     }
   end
 
-  local dir_path, filename = split_file_path(file_path)
+  local dir_path, filename
+  if is_remote_file then
+    dir_path = select(1, split_file_path(file_path))
+    filename = remote_video_info.filename
+  else
+    dir_path, filename = split_file_path(file_path)
+  end
 
   local db_record = db.get({path = file_path})
   local episode_id = force_episode_id or (db_record and db_record.dandanplay_id)
@@ -601,8 +624,16 @@ local function sync_context_execute(opts)
     end
 
     local subject = get_subject_cached(manual_bgm_id, runtime_episode_id, {force_refresh = refresh}) or {}
-    local anime_title = subject.name_cn or subject.name or ("Bangumi " .. tostring(manual_bgm_id))
-    local episode_title = (target_ep.episode and (target_ep.episode.name_cn or target_ep.episode.name)) or ("第" .. tostring(episode_no) .. "话")
+    local anime_title = first_non_empty(
+      subject.name_cn,
+      subject.name,
+      "Bangumi " .. tostring(manual_bgm_id)
+    )
+    local episode_title = first_non_empty(
+      target_ep.episode and target_ep.episode.name_cn,
+      target_ep.episode and target_ep.episode.name,
+      "第" .. tostring(episode_no) .. "话"
+    )
     local resolved_ep = target_ep.episode and tonumber(target_ep.episode.ep) or episode_no
     local resolved_sort = target_ep.episode and tonumber(target_ep.episode.sort) or nil
 
@@ -646,7 +677,7 @@ local function sync_context_execute(opts)
   end
 
   if not episode_id then
-    local autoload_id = db.get_autoload_source(dir_path, filename)
+    local autoload_id = (not is_remote_file) and db.get_autoload_source(dir_path, filename) or nil
     if autoload_id then
       mp.msg.verbose("sync_context: 自动加载 episode_id=" .. tostring(autoload_id))
       episode_id = autoload_id
@@ -664,10 +695,10 @@ local function sync_context_execute(opts)
   end
 
   if not episode_id then
-    local matches = get_match_info(file_path)
+    local matches = get_match_info(file_path, remote_video_info)
     mp.msg.verbose("sync_context: 匹配候选数=" .. tostring(#matches))
     if #matches > 1 then
-      if folder_info and folder_info.manual and folder_info.anime_id then
+      if (not is_remote_file) and folder_info and folder_info.manual and folder_info.anime_id then
         for _, match in ipairs(matches) do
           local match_anime_id = math.floor(match.episodeId / 10000)
           if match_anime_id == folder_info.anime_id then

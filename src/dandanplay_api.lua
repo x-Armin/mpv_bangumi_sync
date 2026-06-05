@@ -8,12 +8,10 @@ local BASE_API = "https://api.dandanplay.net/api/v2/"
 local appid_enc = "00fe3838c677af24ede9"
 local secret_enc = "03c95633c0158054fab5d8ddf5cf92aba62ea23f5dd5713c9053481e66872422"
 
--- Hex字符串转Base64 (用于签名)
 local function hex_to_base64(hex)
   local b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
   local binary = ""
-  
-  -- Hex 转 Binary String
+
   for i = 1, #hex, 2 do
     local byte_hex = hex:sub(i, i+1)
     local byte = tonumber(byte_hex, 16)

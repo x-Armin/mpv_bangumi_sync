@@ -5,18 +5,12 @@ local M = {}
 
 local HASH_LIMIT = 16 * 1024 * 1024
 local HASH_CHUNK_SIZE = 64 * 1024
+local HASH_RANGE = "0-" .. tostring(HASH_LIMIT - 1)
+local HTTP_CODE_MARKER = "__MPV_BGM_HTTP_CODE__:"
 
--- 计算文件MD5 hash（只读取前16MB）
-function M.get_hash(video_path)
+local function calculate_md5_from_chunks(read_chunk)
   if type(md5) ~= "table" or not md5.new then
     mp.msg.error("MD5 module is not available")
-    return ""
-  end
-
-  local hash_path = mp.command_native({"normalize-path", video_path}) or video_path
-  local file, err = io.open(hash_path, "rb")
-  if not file then
-    mp.msg.error("Failed to open file for hash: " .. tostring(err))
     return ""
   end
 
@@ -26,7 +20,7 @@ function M.get_hash(video_path)
 
     while remaining > 0 do
       local read_size = math.min(HASH_CHUNK_SIZE, remaining)
-      local chunk = file:read(read_size)
+      local chunk = read_chunk(read_size)
       if not chunk or chunk == "" then
         break
       end
@@ -38,8 +32,6 @@ function M.get_hash(video_path)
     return ctx:finish():upper()
   end)
 
-  file:close()
-
   if ok and hash and #hash == 32 then
     mp.msg.info("MD5 hash calculated: " .. hash)
     return hash
@@ -47,6 +39,144 @@ function M.get_hash(video_path)
 
   mp.msg.error("Failed to calculate file hash: " .. tostring(hash))
   return ""
+end
+
+local function url_decode(str)
+  if not str then
+    return nil
+  end
+  str = tostring(str):gsub("+", " ")
+  return (str:gsub("%%(%x%x)", function(hex)
+    return string.char(tonumber(hex, 16))
+  end))
+end
+
+local function strip_extension(filename)
+  return (filename and filename:match("^(.+)%.[^%.]+$")) or filename
+end
+
+local function get_url_filename(url)
+  if not url or url == "" then
+    return nil
+  end
+  local without_fragment = tostring(url):gsub("#.*$", "")
+  local without_query = without_fragment:gsub("%?.*$", "")
+  local tail = without_query:match("([^/\\]+)$")
+  tail = url_decode(tail)
+  if not tail or tail == "" then
+    tail = mp.get_property("media-title") or mp.get_property("filename")
+  end
+  return strip_extension(tail or url)
+end
+
+local function get_current_resolution()
+  local width = mp.get_property_number("width") or 0
+  local height = mp.get_property_number("height") or 0
+  return {width, height}
+end
+
+local function fetch_url_hash_range(url)
+  local result = mp.command_native({
+    name = "subprocess",
+    args = {
+      "curl",
+      "-L",
+      "-s",
+      "-S",
+      "--range",
+      HASH_RANGE,
+      "--max-filesize",
+      tostring(HASH_LIMIT),
+      "-w",
+      "\n" .. HTTP_CODE_MARKER .. "%{http_code}",
+      tostring(url),
+    },
+    playback_only = false,
+    capture_stdout = true,
+    capture_stderr = true,
+  })
+  if not result or result.status ~= 0 then
+    mp.msg.error("Failed to fetch URL range for hash: " .. tostring(result and result.stderr or ""))
+    return nil
+  end
+
+  local data, status_code_text = (result.stdout or ""):match("^(.*)\n" .. HTTP_CODE_MARKER .. "(%d%d%d)$")
+  local status_code = tonumber(status_code_text)
+  if status_code ~= 206 then
+    mp.msg.error("URL server does not support byte ranges for hash: HTTP " .. tostring(status_code or "unknown"))
+    return nil
+  end
+
+  data = data or ""
+  if #data > HASH_LIMIT then
+    mp.msg.error("Fetched URL hash range is too large: " .. tostring(#data))
+    return nil
+  end
+  return data
+end
+
+-- 计算文件MD5 hash（只读取前16MB）
+function M.get_hash(video_path)
+  local hash_path = mp.command_native({"normalize-path", video_path}) or video_path
+  local file, err = io.open(hash_path, "rb")
+  if not file then
+    mp.msg.error("Failed to open file for hash: " .. tostring(err))
+    return ""
+  end
+
+  local hash = calculate_md5_from_chunks(function(read_size)
+    return file:read(read_size)
+  end)
+  file:close()
+  return hash
+end
+
+function M.get_hash_from_url(url)
+  local data = fetch_url_hash_range(url)
+  if not data then
+    return ""
+  end
+
+  local offset = 1
+  local hash = calculate_md5_from_chunks(function(read_size)
+    if offset > #data then
+      return nil
+    end
+    local chunk = data:sub(offset, offset + read_size - 1)
+    offset = offset + #chunk
+    return chunk
+  end)
+  return hash
+end
+
+function M.get_url_content_length(url)
+  local result = mp.command_native({
+    name = "subprocess",
+    args = {"curl", "-L", "-s", "-S", "-I", tostring(url)},
+    playback_only = false,
+    capture_stdout = true,
+    capture_stderr = true,
+  })
+  if not result or result.status ~= 0 or not result.stdout then
+    return 0
+  end
+
+  local size = nil
+  for value in result.stdout:gmatch("[Cc][Oo][Nn][Tt][Ee][Nn][Tt]%-[Ll][Ee][Nn][Gg][Tt][Hh]:%s*(%d+)") do
+    size = tonumber(value) or size
+  end
+  return size or 0
+end
+
+function M.build_info(fields)
+  fields = fields or {}
+  return {
+    hash = fields.hash or "",
+    duration = math.floor(tonumber(fields.duration) or 0),
+    filename = fields.filename or "",
+    size = tonumber(fields.size) or 0,
+    resolution = fields.resolution or {0, 0},
+  }
 end
 
 -- 获取视频信息
@@ -74,15 +204,26 @@ function M.get_info(video_path)
   end
   
   local filename = video_path:match("([^/\\]+)$") or video_path
-  filename = filename:match("^(.+)%.[^%.]+$") or filename
+  filename = strip_extension(filename)
   
-  return {
+  return M.build_info({
     hash = M.get_hash(video_path),
     duration = math.floor(duration or 0),
     filename = filename,
     size = file_info.size,
     resolution = {width or 0, height or 0},
-  }
+  })
+end
+
+function M.get_url_info(url)
+  local filename = get_url_filename(url)
+  return M.build_info({
+    hash = M.get_hash_from_url(url),
+    duration = mp.get_property_number("duration") or 0,
+    filename = filename,
+    size = M.get_url_content_length(url),
+    resolution = get_current_resolution(),
+  })
 end
 
 -- 使用ffprobe获取时长

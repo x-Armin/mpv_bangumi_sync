@@ -3,5 +3,11 @@
   "runtime": {
     "version": "LuaJIT"
   },
-  "workspace.library": ["./types/"]
+  "workspace.library": ["./types/"],
+    "diagnostics.globals": [
+        "mp"
+    ],
+    "diagnostics.disable": [
+        "undefined-global"
+    ]
 }
