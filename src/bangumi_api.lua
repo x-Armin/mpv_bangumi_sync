@@ -14,8 +14,24 @@ local function dump_for_log(v)
   return tostring(v)
 end
 
-local API_URL = "https://api.bgm.tv"
+local DEFAULT_API_URL = "https://api.bgm.tv"
+local API_ERROR_MESSAGE = "Bangumi API 请求失败，请检查 Bangumi 状态或 bangumi_api 配置"
 local USERNAME_FILE = mp_utils.join_path(paths.DATA_PATH, "username.json")
+
+local function get_api_url()
+  return (config.config and config.config.bangumi_api) or DEFAULT_API_URL
+end
+
+local function warn_api_error(res)
+  if res and res.detached then
+    return
+  end
+  local status_code = res and tonumber(res.status_code or 0) or 0
+  if not res or status_code == 0 or status_code >= 500 then
+    mp.msg.error(API_ERROR_MESSAGE .. ": " .. tostring(status_code))
+    mp.osd_message(API_ERROR_MESSAGE, 4)
+  end
+end
 
 -- 获取用户名（延迟初始化）
 local username = nil
@@ -84,7 +100,7 @@ end
 
 -- GET请求
 function M.get(uri, params)
-  local url = API_URL .. uri
+  local url = get_api_url() .. uri
   local res = http.get(url, {
     headers = get_headers(),
     params = params,
@@ -92,17 +108,19 @@ function M.get(uri, params)
   })
   
   if not res then
+    warn_api_error(res)
     return {status_code = 500, body = {}}
   end
   
   mp.msg.verbose("bangumi_api GET response: " .. dump_for_log(res))
+  warn_api_error(res)
   res.status_code = res.status_code or 200
   return res
 end
 
 -- POST请求
 function M.post(uri, data)
-  local url = API_URL .. uri
+  local url = get_api_url() .. uri
   local res = http.post(url, {
     headers = get_headers(),
     data = data,
@@ -110,17 +128,19 @@ function M.post(uri, data)
   })
   
   if not res then
+    warn_api_error(res)
     return {status_code = 500, body = {}}
   end
   
   mp.msg.verbose("bangumi_api POST response: " .. dump_for_log(res))
+  warn_api_error(res)
   res.status_code = res.status_code or 200
   return res
 end
 
 -- PUT请求
 function M.put(uri, data)
-  local url = API_URL .. uri
+  local url = get_api_url() .. uri
   local res = http.put(url, {
     headers = get_headers(),
     data = data,
@@ -128,17 +148,19 @@ function M.put(uri, data)
   })
   
   if not res then
+    warn_api_error(res)
     return {status_code = 500, body = {}}
   end
   
   mp.msg.verbose("bangumi_api PUT response: " .. dump_for_log(res))
+  warn_api_error(res)
   res.status_code = res.status_code or 200
   return res
 end
 
 -- PATCH请求
 function M.patch(uri, data, opts)
-  local url = API_URL .. uri
+  local url = get_api_url() .. uri
   local res = http.patch(url, {
     headers = get_headers(),
     data = data,
@@ -147,26 +169,30 @@ function M.patch(uri, data, opts)
   })
 
   if not res then
+    warn_api_error(res)
     return {status_code = 500, body = {}}
   end
 
   mp.msg.verbose("bangumi_api PATCH response: " .. dump_for_log(res))
+  warn_api_error(res)
   res.status_code = res.status_code or 200
   return res
 end
 
 -- DELETE请求
 function M.delete(uri)
-  local url = API_URL .. uri
+  local url = get_api_url() .. uri
   local res = http.delete(url, {
     headers = get_headers(),
   })
 
   if not res then
+    warn_api_error(res)
     return {status_code = 500, body = {}}
   end
 
   mp.msg.verbose("bangumi_api DELETE response: " .. dump_for_log(res))
+  warn_api_error(res)
   res.status_code = res.status_code or 200
   return res
 end

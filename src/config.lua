@@ -1,8 +1,13 @@
 local opt = require "mp.options"
 
+local DEFAULT_BANGUMI_API = "https://api.bgm.tv"
+
 Options = {
   -- Bangumi访问令牌（必需）
   bgm_access_token = "",
+
+  -- Bangumi API URL
+  bangumi_api = DEFAULT_BANGUMI_API,
 
   -- Bangumi API代理，留空表示不使用代理
   bgm_proxy = "",
@@ -37,6 +42,16 @@ local function normalize_string(value, default_value)
     return default_value
   end
   return value
+end
+
+local function normalize_bangumi_api(value)
+  value = normalize_string(value, DEFAULT_BANGUMI_API)
+  if not value:match("^https?://") then
+    mp.msg.error("bangumi_api 配置无效，请使用完整 URL，例如 https://api.bgm.tv")
+    mp.osd_message("bangumi_api 配置无效，请检查配置", 4)
+    return DEFAULT_BANGUMI_API
+  end
+  return value:gsub("/+$", "")
 end
 
 local function normalize_boolean(value, default_value)
@@ -135,6 +150,7 @@ end
 
 local function apply_options()
   Options.bgm_access_token = normalize_string(Options.bgm_access_token, "")
+  Options.bangumi_api = normalize_bangumi_api(Options.bangumi_api)
   Options.bgm_proxy = normalize_string(Options.bgm_proxy, "")
   Options.storage1 = normalize_string(Options.storage1, "")
   Options.storage2 = normalize_string(Options.storage2, "")
@@ -165,6 +181,7 @@ local function apply_options()
   end
 
   public_config.access_token = Options.bgm_access_token
+  public_config.bangumi_api = Options.bangumi_api
   public_config.bgm_proxy = Options.bgm_proxy
   public_config.storages = Options.all_storages_list
   public_config.storage1 = Options.storage1_list
