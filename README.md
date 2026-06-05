@@ -106,12 +106,14 @@ enable_auto_mark=yes
 progress_mark_threshold=0.9
 storage1_batch_sync_threshold=1
 storage2_batch_sync_threshold=4
+bangumi_api=https://api.bgm.tv
 bgm_proxy=
 ```
 
 - `enable_auto_mark`：是否自动点 Bangumi 格子。设为 `no` 时只展示信息。
 - `progress_mark_threshold`：标记已看的播放进度阈值，`0.9` 表示 90%。
 - `storage*_batch_sync_threshold`：待同步剧集数量达到阈值时批量同步。设为 `0` 时不按数量自动同步，但退出 mpv 或关闭自动点格子时仍会同步。
+- `bangumi_api`：Bangumi API URL，可设置为镜像或兼容 API 地址。必须使用完整 URL，例如 `https://api.bgm.tv`。**请自行确认 API URL 的安全性；因使用第三方 API URL 产生的问题，本插件不负责**
 - `bgm_proxy`：Bangumi API 代理，留空表示不使用代理。该代理不影响弹弹play API。
 
 代理示例：
