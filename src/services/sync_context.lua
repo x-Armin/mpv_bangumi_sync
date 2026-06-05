@@ -511,7 +511,7 @@ local function sync_context_execute(opts)
       tostring(force_episode_id)
     )
   )
-  local file_path = remote_path_key or (remote_url and utils.url_decode(remote_url)) or get_current_file_path()
+  local file_path = remote_path_key or (remote_url and utils.stable_url_key(remote_url)) or get_current_file_path()
   if is_remote_file then
     remote_video_info = remote_video_info or video_info.get_url_info(remote_url or file_path)
     if not remote_video_info then

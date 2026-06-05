@@ -124,6 +124,14 @@ function M.url_decode(value, opts)
   return decoded
 end
 
+function M.stable_url_key(value)
+  if value == nil then
+    return nil
+  end
+  local key = tostring(value):gsub("#.*$", ""):gsub("%?.*$", "")
+  return M.url_decode(key)
+end
+
 -- 简单的JSON格式化（用于HTTP请求）
 function M.format_json(data)
   local mp_utils = require "mp.utils"

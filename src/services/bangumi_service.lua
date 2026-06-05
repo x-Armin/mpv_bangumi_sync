@@ -138,6 +138,9 @@ local function get_current_file_path()
   if not file_path then
     return nil
   end
+  if utils.is_protocol(file_path) then
+    return utils.stable_url_key(file_path)
+  end
   return mp.command_native({"normalize-path", file_path})
 end
 
@@ -367,8 +370,7 @@ function M.update_episode(opts)
     mp.msg.warn("收藏状态检测失败，继续更新单集状态")
   end
   
-  local file_path = mp.get_property("path")
-  file_path = mp.command_native({"normalize-path", file_path})
+  local file_path = get_current_file_path()
   local db_record = db.get({path = file_path})
   local manual_bgm_mode = db_record
     and db_record.manual == true
