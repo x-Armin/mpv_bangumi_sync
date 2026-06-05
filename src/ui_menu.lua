@@ -208,7 +208,7 @@ local function build_info_menu_props(state)
       selectable = true},
   }
   if IsNetworkPath then
-    table.insert(items, {
+    table.insert(items, #items, {
       title = "匹配模式：" .. (NetworkModeText ~= "" and NetworkModeText or "未知"),
       value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
       selectable = true,

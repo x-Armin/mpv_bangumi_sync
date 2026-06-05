@@ -129,24 +129,39 @@ local function is_alias_key(key)
   end
   key = tostring(key)
   return key:find("别名", 1, true)
-    or key:find("中文名", 1, true)
     or key:find("英文名", 1, true)
     or key:find("日文名", 1, true)
     or key:find("原作名", 1, true)
     or key:lower():find("alias", 1, true)
 end
 
-local function collect_subject_titles(subject)
-  local titles = {}
+local function collect_subject_title_groups(subject)
+  local primary_titles = {}
+  local alias_titles = {}
   local seen = {}
 
-  append_unique(titles, seen, subject and subject.name_cn)
-  append_unique(titles, seen, subject and subject.name)
+  append_unique(primary_titles, seen, subject and subject.name_cn)
+  append_unique(primary_titles, seen, subject and subject.name)
 
   for _, item in ipairs(subject and subject.infobox or {}) do
     if is_alias_key(item and item.key) then
-      append_infobox_value(titles, seen, item.value)
+      append_infobox_value(alias_titles, seen, item.value)
     end
+  end
+
+  return primary_titles, alias_titles
+end
+
+local function collect_subject_titles(subject)
+  local titles = {}
+  local seen = {}
+  local primary_titles, alias_titles = collect_subject_title_groups(subject)
+
+  for _, value in ipairs(primary_titles) do
+    append_unique(titles, seen, value)
+  end
+  for _, value in ipairs(alias_titles) do
+    append_unique(titles, seen, value)
   end
 
   return titles
@@ -310,7 +325,21 @@ local function build_subject_candidate(subject, subject_id)
     return nil
   end
 
+  local primary_titles = subject.primary_titles
+  local alias_titles = subject.alias_titles
+  if not primary_titles or not alias_titles then
+    primary_titles, alias_titles = collect_subject_title_groups(subject)
+  end
+
   local titles = subject.titles or collect_subject_titles(subject)
+  local normalized_primary_titles = merge_normalized_titles(
+    subject.normalized_primary_titles,
+    normalize_titles(primary_titles)
+  )
+  local normalized_alias_titles = merge_normalized_titles(
+    subject.normalized_alias_titles,
+    normalize_titles(alias_titles)
+  )
   local normalized_titles = merge_normalized_titles(
     subject.normalized_titles,
     normalize_titles(titles)
@@ -319,6 +348,10 @@ local function build_subject_candidate(subject, subject_id)
     bgm_id = bgm_id,
     subject = subject,
     titles = titles,
+    primary_titles = primary_titles,
+    alias_titles = alias_titles,
+    normalized_primary_titles = normalized_primary_titles,
+    normalized_alias_titles = normalized_alias_titles,
     normalized_titles = normalized_titles,
     search_rank = tonumber(subject.search_rank),
   }
@@ -367,13 +400,31 @@ local function score_subject_candidate(title_info, candidate)
   end
 
   candidate.exact = false
+  candidate.primary_exact = false
+  candidate.alias_exact = false
   candidate.score = 0
+
+  for _, normalized in ipairs(candidate.normalized_primary_titles or {}) do
+    for _, input in ipairs(input_variants) do
+      if normalized == input then
+        candidate.primary_exact = true
+        candidate.exact = true
+      end
+    end
+  end
+
+  for _, normalized in ipairs(candidate.normalized_alias_titles or {}) do
+    for _, input in ipairs(input_variants) do
+      if normalized == input then
+        candidate.alias_exact = true
+        candidate.exact = true
+      end
+    end
+  end
 
   for _, normalized in ipairs(candidate.normalized_titles or {}) do
     for _, input in ipairs(input_variants) do
-      if normalized == input then
-        candidate.exact = true
-      elseif is_season_title_match(title_info, candidate, normalized, input_variants) then
+      if is_season_title_match(title_info, candidate, normalized, input_variants) then
         candidate.exact = true
         candidate.score = 1
       end
@@ -392,6 +443,12 @@ local function choose_scored_subject(title_info, candidates)
   local exact_hits = {}
   local exact_count = 0
   local exact_hit = nil
+  local primary_exact_hits = {}
+  local primary_exact_count = 0
+  local primary_exact_hit = nil
+  local alias_exact_hits = {}
+  local alias_exact_count = 0
+  local alias_exact_hit = nil
   local best = nil
   local second = nil
 
@@ -403,6 +460,16 @@ local function choose_scored_subject(title_info, candidates)
         exact_count = exact_count + 1
         exact_hit = scored
       end
+      if scored.primary_exact and not primary_exact_hits[scored.bgm_id] then
+        primary_exact_hits[scored.bgm_id] = true
+        primary_exact_count = primary_exact_count + 1
+        primary_exact_hit = scored
+      end
+      if scored.alias_exact and not alias_exact_hits[scored.bgm_id] then
+        alias_exact_hits[scored.bgm_id] = true
+        alias_exact_count = alias_exact_count + 1
+        alias_exact_hit = scored
+      end
 
       if scored.score > 0 then
         if not best or scored.score > best.score then
@@ -413,6 +480,19 @@ local function choose_scored_subject(title_info, candidates)
         end
       end
     end
+  end
+
+  if primary_exact_count == 1 and primary_exact_hit then
+    return primary_exact_hit.bgm_id, "exact", primary_exact_hit.score, primary_exact_hit
+  end
+  if primary_exact_count > 1 then
+    return nil
+  end
+  if alias_exact_count == 1 and alias_exact_hit then
+    return alias_exact_hit.bgm_id, "alias_exact", alias_exact_hit.score, alias_exact_hit
+  end
+  if alias_exact_count > 1 then
+    return nil
   end
 
   if exact_count == 1 and exact_hit then
@@ -536,10 +616,17 @@ local function upsert_subject(data, subject)
     return false
   end
 
+  local primary_titles, alias_titles = collect_subject_title_groups(subject)
   local titles = collect_subject_titles(subject)
+  local normalized_primary = normalize_titles(primary_titles)
+  local normalized_alias = normalize_titles(alias_titles)
   local normalized = normalize_titles(titles)
   data.subjects[tostring(bgm_id)] = {
     titles = titles,
+    primary_titles = primary_titles,
+    alias_titles = alias_titles,
+    normalized_primary_titles = normalized_primary,
+    normalized_alias_titles = normalized_alias,
     normalized_titles = normalized,
     updated_at = os.time(),
   }
@@ -574,7 +661,7 @@ function M.match_subject(title_info)
 
   local bgm_id, mode, score = choose_scored_subject(title_info, candidates)
   if bgm_id then
-    local source = mode == "exact" and "subject_alias" or "subject_fuzzy"
+    local source = (mode == "exact" or mode == "alias_exact") and "subject_alias" or "subject_fuzzy"
     save_alias(data, title_info, bgm_id, source)
     save_data(data)
     return bgm_id, source, score
