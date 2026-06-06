@@ -368,7 +368,7 @@ local function collect_search_titles(anime_info)
   return titles
 end
 
-local function resolve_bgm_id_from_online_databases(anime_info)
+local function bangumi_id_from_online_databases_process(anime_info)
   for _, item in ipairs(anime_info and anime_info.onlineDatabases or {}) do
     local url = item and item.url or nil
     local name = item and item.name or nil
@@ -383,7 +383,7 @@ local function resolve_bgm_id_from_online_databases(anime_info)
   return nil
 end
 
-local function resolve_bgm_id_from_search(anime_info)
+local function bangumi_id_from_search_process(anime_info)
   local queries = collect_search_titles(anime_info)
   if #queries == 0 then
     return nil
@@ -464,7 +464,7 @@ local function resolve_bgm_id_from_search(anime_info)
   return nil
 end
 
-local function resolve_bgm_binding(anime_info, episode_id)
+local function bangumi_binding_process(anime_info, episode_id)
   if not anime_info then
     return nil
   end
@@ -475,9 +475,9 @@ local function resolve_bgm_binding(anime_info, episode_id)
     return bgm_id, bgm_url, "dandanplay"
   end
 
-  local resolved_id, resolved_url, source = resolve_bgm_id_from_online_databases(anime_info)
+  local resolved_id, resolved_url, source = bangumi_id_from_online_databases_process(anime_info)
   if not resolved_id then
-    resolved_id, resolved_url, source = resolve_bgm_id_from_search(anime_info)
+    resolved_id, resolved_url, source = bangumi_id_from_search_process(anime_info)
   end
 
   if resolved_id then
@@ -489,29 +489,37 @@ local function resolve_bgm_binding(anime_info, episode_id)
   return nil
 end
 
-local function sync_context_execute(opts)
+-- 归一化 sync_context 入参，统一兼容 boolean 和 table 两种调用方式。
+-- 返回 sync_opts 表，包含刷新、来源、远端文件和 episodes 加载开关。
+local function sync_opts_normalize(opts)
   opts = opts or {}
-  local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
-  local force_episode_id = type(opts) == "table" and opts.episode_id or nil
-  local force_manual_bgm_id = type(opts) == "table" and tonumber(opts.manual_bgm_id) or nil
-  local source = type(opts) == "table" and opts.source or nil
-  local ensure_episodes = type(opts) ~= "table" or opts.ensure_episodes ~= false
-  local refresh = force_refresh or source == "manual" or source == "manual_bgm"
-  local remote_url = type(opts) == "table" and opts.remote_url or nil
-  local remote_path_key = type(opts) == "table" and opts.remote_path_key or nil
-  local remote_video_info = type(opts) == "table" and opts.remote_video_info or nil
-  local is_remote_file = remote_url ~= nil or remote_video_info ~= nil
+  local is_table = type(opts) == "table"
+  local source = is_table and opts.source or nil
+  local force_refresh = opts == true or (is_table and opts.force_refresh)
 
-  mp.msg.verbose(
-    string.format(
-      "sync_context: 开始 source=%s force_refresh=%s ensure_episodes=%s force_episode_id=%s",
-      tostring(source),
-      tostring(force_refresh == true),
-      tostring(ensure_episodes),
-      tostring(force_episode_id)
-    )
-  )
-  local file_path = remote_path_key or (remote_url and utils.stable_url_key(remote_url)) or get_current_file_path()
+  return {
+    force_refresh = force_refresh,
+    force_episode_id = is_table and opts.episode_id or nil,
+    force_manual_bgm_id = is_table and tonumber(opts.manual_bgm_id) or nil,
+    source = source,
+    ensure_episodes = not is_table or opts.ensure_episodes ~= false,
+    refresh = force_refresh or source == "manual" or source == "manual_bgm",
+    remote_url = is_table and opts.remote_url or nil,
+    remote_path_key = is_table and opts.remote_path_key or nil,
+    remote_video_info = is_table and opts.remote_video_info or nil,
+  }
+end
+
+-- 处理当前视频来源，区分本地文件和远端文件并准备 storage 信息。
+-- 成功返回 status=ok 的 video_source；失败返回 VideoPathError。
+local function video_source_process(sync_opts)
+  local remote_url = sync_opts.remote_url
+  local remote_video_info = sync_opts.remote_video_info
+  local is_remote_file = remote_url ~= nil or remote_video_info ~= nil
+  local file_path = sync_opts.remote_path_key
+    or (remote_url and utils.stable_url_key(remote_url))
+    or get_current_file_path()
+
   if is_remote_file then
     remote_video_info = remote_video_info or video_info.get_url_info(remote_url or file_path)
     if not remote_video_info then
@@ -552,10 +560,21 @@ local function sync_context_execute(opts)
     dir_path, filename = split_file_path(file_path)
   end
 
-  local db_record = db.get({path = file_path})
-  local episode_id = force_episode_id or (db_record and db_record.dandanplay_id)
-  local episode_info = nil
-  local anime_info = nil
+  return {
+    status = "ok",
+    file_path = file_path,
+    dir_path = dir_path,
+    filename = filename,
+    storage_config = storage_config,
+    remote_video_info = remote_video_info,
+    is_remote_file = is_remote_file,
+  }
+end
+
+-- 从 DB 读取当前文件已保存的同步状态，包括文件记录、目录记录和手动 Bangumi 绑定。
+-- 返回 sync_state 表，包含 db_record、folder_info、manual_bgm_id 和 episode_id。
+local function load_sync_state_from_db(sync_opts, video_source)
+  local db_record = db.get({path = video_source.file_path})
   mp.msg.verbose(
     string.format(
       "sync_context: db 记录 dandanplay_id=%s bgm_id=%s",
@@ -564,120 +583,156 @@ local function sync_context_execute(opts)
     )
   )
 
-  local folder_info = dir_path ~= "" and db.get_folder_info(dir_path) or nil
-  local manual_bgm_id = force_manual_bgm_id
+  local folder_info = video_source.dir_path ~= "" and db.get_folder_info(video_source.dir_path) or nil
+  local manual_bgm_id = sync_opts.force_manual_bgm_id
   if not manual_bgm_id and folder_info and folder_info.manual and folder_info.bgm_id then
     manual_bgm_id = tonumber(folder_info.bgm_id)
   end
 
-  if manual_bgm_id and not force_episode_id then
-    local episode_no = get_episode_no_from_filename(filename)
-    if not episode_no then
-      mp.msg.error("无法从文件名解析集数: " .. tostring(filename))
-      return {
-        status = "error",
-        error = "EpisodeNumberNotFound",
-        reason = "EpisodeFromFilenameFailed",
-      }
-    end
+  return {
+    db_record = db_record,
+    folder_info = folder_info,
+    manual_bgm_id = manual_bgm_id,
+    episode_id = sync_opts.force_episode_id or (db_record and db_record.dandanplay_id),
+  }
+end
 
-    local runtime_episode_id = manual_bgm_id * 10000 + episode_no
-    local episodes = get_user_episodes_cached(runtime_episode_id, manual_bgm_id, {force_refresh = refresh})
-    if not episodes or not episodes.data then
-      mp.msg.error("获取Bangumi剧集列表失败: " .. tostring(manual_bgm_id))
-      return {
-        status = "error",
-        error = "EpisodesError",
-        reason = "BangumiEpisodesUnavailable",
-      }
-    end
+-- 组装 sync_context 的统一成功结果。
+-- 返回 status=ok，并在 context 中携带文件、剧集、Bangumi、episodes 和 storage 信息。
+local function sync_context_build(video_source, episode_id, episode_info, anime_info, bgm_id, bgm_url, episodes)
+  return {
+    status = "ok",
+    context = {
+      file_path = video_source.file_path,
+      episode_id = episode_id,
+      episode_info = episode_info,
+      anime_info = anime_info,
+      bgm_id = bgm_id,
+      bgm_url = bgm_url or (bgm_id and ("https://bgm.tv/subject/" .. tostring(bgm_id)) or nil),
+      episodes = episodes,
+      storage = video_source.storage_config,
+    },
+  }
+end
 
-    local target_ep, match_result = find_target_episode(episodes.data, episode_no)
-    if not target_ep then
-      local stats = match_result and match_result.stats or {}
-      mp.msg.error(
-        string.format(
-          "无法在Bangumi剧集中定位当前集: parsed_no=%s max_main_ep=%s mode=%s reason=%s",
-          tostring(episode_no),
-          tostring(stats and stats.max_main_ep),
-          tostring(match_result and match_result.mode),
-          tostring(match_result and match_result.reason)
-        )
-      )
-      return {
-        status = "error",
-        error = "EpisodeMappingNotFound",
-        reason = "BangumiEpisodeNotFound",
-      }
-    end
-    mp.msg.verbose(
-      string.format(
-        "sync_context: manual_bgm 匹配命中 mode=%s reason=%s parsed_no=%s max_main_ep=%s",
-        tostring(match_result and match_result.mode),
-        tostring(match_result and match_result.reason),
-        tostring(episode_no),
-        tostring(match_result and match_result.stats and match_result.stats.max_main_ep)
-      )
-    )
-    if match_result and match_result.reason == "sort_fallback_parsed_gt_max_ep" then
-      mp.msg.verbose("sync_context: 检测到累计编号映射，已使用 sort 兜底")
-    end
+-- 处理手动 Bangumi 绑定流程，通过文件名集数映射 Bangumi episode。
+-- 不适用时返回 nil；成功返回完整 context；失败返回对应 error。
+local function manual_bangumi_context_process(sync_opts, video_source, sync_state)
+  local manual_bgm_id = sync_state.manual_bgm_id
+  if not manual_bgm_id or sync_opts.force_episode_id then
+    return nil
+  end
 
-    local subject = get_subject_cached(manual_bgm_id, runtime_episode_id, {force_refresh = refresh}) or {}
-    local anime_title = first_non_empty(
-      subject.name_cn,
-      subject.name,
-      "Bangumi " .. tostring(manual_bgm_id)
-    )
-    local episode_title = first_non_empty(
-      target_ep.episode and target_ep.episode.name_cn,
-      target_ep.episode and target_ep.episode.name,
-      "第" .. tostring(episode_no) .. "话"
-    )
-    local resolved_ep = target_ep.episode and tonumber(target_ep.episode.ep) or episode_no
-    local resolved_sort = target_ep.episode and tonumber(target_ep.episode.sort) or nil
-
-    episode_info = {
-      episodeId = runtime_episode_id,
-      animeId = manual_bgm_id,
-      episodeEp = resolved_ep,
-      episodeSort = resolved_sort,
-      episodeMatchMode = match_result and match_result.mode or nil,
-      animeTitle = anime_title,
-      episodeTitle = episode_title,
-      bgmEpisodeId = target_ep.episode and target_ep.episode.id or nil,
-      shift = 0.0,
-    }
-    anime_info = {
-      animeTitle = anime_title,
-      bangumiUrl = "https://bgm.tv/subject/" .. tostring(manual_bgm_id),
-    }
-
-    db.set_bgm_id(file_path, manual_bgm_id)
-    db.set_episode_info(runtime_episode_id, episode_info)
-
+  local episode_no = get_episode_no_from_filename(video_source.filename)
+  if not episode_no then
+    mp.msg.error("无法从文件名解析集数: " .. tostring(video_source.filename))
     return {
-      status = "ok",
-      context = {
-        file_path = file_path,
-        episode_id = runtime_episode_id,
-        episode_info = episode_info,
-        anime_info = anime_info,
-        bgm_id = manual_bgm_id,
-        bgm_url = "https://bgm.tv/subject/" .. tostring(manual_bgm_id),
-        episodes = episodes,
-        storage = storage_config,
-      },
+      status = "error",
+      error = "EpisodeNumberNotFound",
+      reason = "EpisodeFromFilenameFailed",
     }
   end
 
-  if force_episode_id then
-    mp.msg.verbose("sync_context: 强制 episode_id=" .. tostring(force_episode_id))
-    db.set_dandanplay_id(file_path, force_episode_id)
+  local runtime_episode_id = manual_bgm_id * 10000 + episode_no
+  local episodes = get_user_episodes_cached(runtime_episode_id, manual_bgm_id, {force_refresh = sync_opts.refresh})
+  if not episodes or not episodes.data then
+    mp.msg.error("获取Bangumi剧集列表失败: " .. tostring(manual_bgm_id))
+    return {
+      status = "error",
+      error = "EpisodesError",
+      reason = "BangumiEpisodesUnavailable",
+    }
+  end
+
+  local target_ep, match_result = find_target_episode(episodes.data, episode_no)
+  if not target_ep then
+    local stats = match_result and match_result.stats or {}
+    mp.msg.error(
+      string.format(
+        "无法在Bangumi剧集中定位当前集: parsed_no=%s max_main_ep=%s mode=%s reason=%s",
+        tostring(episode_no),
+        tostring(stats and stats.max_main_ep),
+        tostring(match_result and match_result.mode),
+        tostring(match_result and match_result.reason)
+      )
+    )
+    return {
+      status = "error",
+      error = "EpisodeMappingNotFound",
+      reason = "BangumiEpisodeNotFound",
+    }
+  end
+
+  mp.msg.verbose(
+    string.format(
+      "sync_context: manual_bgm 匹配命中 mode=%s reason=%s parsed_no=%s max_main_ep=%s",
+      tostring(match_result and match_result.mode),
+      tostring(match_result and match_result.reason),
+      tostring(episode_no),
+      tostring(match_result and match_result.stats and match_result.stats.max_main_ep)
+    )
+  )
+  if match_result and match_result.reason == "sort_fallback_parsed_gt_max_ep" then
+    mp.msg.verbose("sync_context: 检测到累计编号映射，已使用 sort 兜底")
+  end
+
+  local subject = get_subject_cached(manual_bgm_id, runtime_episode_id, {force_refresh = sync_opts.refresh}) or {}
+  local anime_title = first_non_empty(
+    subject.name_cn,
+    subject.name,
+    "Bangumi " .. tostring(manual_bgm_id)
+  )
+  local episode_title = first_non_empty(
+    target_ep.episode and target_ep.episode.name_cn,
+    target_ep.episode and target_ep.episode.name,
+    "第" .. tostring(episode_no) .. "话"
+  )
+  local resolved_ep = target_ep.episode and tonumber(target_ep.episode.ep) or episode_no
+  local resolved_sort = target_ep.episode and tonumber(target_ep.episode.sort) or nil
+  local episode_info = {
+    episodeId = runtime_episode_id,
+    animeId = manual_bgm_id,
+    episodeEp = resolved_ep,
+    episodeSort = resolved_sort,
+    episodeMatchMode = match_result and match_result.mode or nil,
+    animeTitle = anime_title,
+    episodeTitle = episode_title,
+    bgmEpisodeId = target_ep.episode and target_ep.episode.id or nil,
+    shift = 0.0,
+  }
+  local anime_info = {
+    animeTitle = anime_title,
+    bangumiUrl = "https://bgm.tv/subject/" .. tostring(manual_bgm_id),
+  }
+
+  db.set_bgm_id(video_source.file_path, manual_bgm_id)
+  db.set_episode_info(runtime_episode_id, episode_info)
+  return sync_context_build(
+    video_source,
+    runtime_episode_id,
+    episode_info,
+    anime_info,
+    manual_bgm_id,
+    "https://bgm.tv/subject/" .. tostring(manual_bgm_id),
+    episodes
+  )
+end
+
+-- 处理 dandanplay episode_id 获取流程，包括强制 ID、自动加载和候选匹配。
+-- 成功返回 episode_id/episode_info；多候选返回 select；失败返回 MatchNotFound。
+local function dandanplay_context_process(sync_opts, video_source, sync_state)
+  local episode_id = sync_state.episode_id
+  local episode_info = nil
+
+  if sync_opts.force_episode_id then
+    mp.msg.verbose("sync_context: 强制 episode_id=" .. tostring(sync_opts.force_episode_id))
+    db.set_dandanplay_id(video_source.file_path, sync_opts.force_episode_id)
   end
 
   if not episode_id then
-    local autoload_id = (not is_remote_file) and db.get_autoload_source(dir_path, filename) or nil
+    local autoload_id = (not video_source.is_remote_file)
+      and db.get_autoload_source(video_source.dir_path, video_source.filename)
+      or nil
     if autoload_id then
       mp.msg.verbose("sync_context: 自动加载 episode_id=" .. tostring(autoload_id))
       episode_id = autoload_id
@@ -695,10 +750,11 @@ local function sync_context_execute(opts)
   end
 
   if not episode_id then
-    local matches = get_match_info(file_path, remote_video_info)
+    local matches = get_match_info(video_source.file_path, video_source.remote_video_info)
     mp.msg.verbose("sync_context: 匹配候选数=" .. tostring(#matches))
     if #matches > 1 then
-      if (not is_remote_file) and folder_info and folder_info.manual and folder_info.anime_id then
+      local folder_info = sync_state.folder_info
+      if (not video_source.is_remote_file) and folder_info and folder_info.manual and folder_info.anime_id then
         for _, match in ipairs(matches) do
           local match_anime_id = math.floor(match.episodeId / 10000)
           if match_anime_id == folder_info.anime_id then
@@ -707,7 +763,7 @@ local function sync_context_execute(opts)
             )
             episode_info = match
             episode_id = match.episodeId
-            db.set_dandanplay_id(file_path, episode_id)
+            db.set_dandanplay_id(video_source.file_path, episode_id)
             db.set_episode_info(episode_id, episode_info)
             break
           end
@@ -718,7 +774,7 @@ local function sync_context_execute(opts)
       end
 
       if not episode_id then
-        local info = utils.extract_info_from_filename(filename)
+        local info = utils.extract_info_from_filename(video_source.filename)
         mp.msg.verbose("sync_context: 匹配结果需要手动选择")
         return {
           status = "select",
@@ -733,27 +789,38 @@ local function sync_context_execute(opts)
       if episode_info then
         mp.msg.verbose("sync_context: 选中匹配 episode_id=" .. tostring(episode_info.episodeId))
         episode_id = episode_info.episodeId
-        db.set_dandanplay_id(file_path, episode_id)
+        db.set_dandanplay_id(video_source.file_path, episode_id)
         db.set_episode_info(episode_id, episode_info)
       end
     end
   end
 
   if not episode_id then
-    mp.msg.error("Match failed: " .. file_path)
+    mp.msg.error("Match failed: " .. video_source.file_path)
     mp.msg.verbose("sync_context: 匹配后仍未获得 episode_id")
-    return {status = "error", error = "MatchNotFound", video = file_path}
+    return {status = "error", error = "MatchNotFound", video = video_source.file_path}
   end
 
-  if source == "manual" then
+  if sync_opts.source == "manual" then
     local anime_id = math.floor(episode_id / 10000)
-    db.set_manual_selection(file_path, anime_id)
+    db.set_manual_selection(video_source.file_path, anime_id)
     mp.msg.verbose("sync_context: 已保存手动 anime_id=" .. tostring(anime_id))
   end
 
+  return {
+    status = "ok",
+    episode_id = episode_id,
+    episode_info = episode_info,
+  }
+end
+
+-- 校验 episode_info 是否可用，缺失时从 anime_info 重建并写入缓存。
+-- 成功返回 episode_info 和可能已加载的 anime_info；失败返回 EpisodeInfoError。
+local function episode_info_ensure_or_rebuild(sync_opts, video_source, episode_id, episode_info)
+  local anime_info = nil
   if not episode_info then
     local anime_id = math.floor(episode_id / 10000)
-    anime_info = get_anime_info_cached(episode_id, anime_id, {force_refresh = refresh})
+    anime_info = get_anime_info_cached(episode_id, anime_id, {force_refresh = sync_opts.refresh})
     episode_info = build_episode_info_from_anime(anime_info, episode_id)
     if episode_info then
       mp.msg.verbose("sync_context: 已从 anime_info 构建 episode_info")
@@ -767,11 +834,20 @@ local function sync_context_execute(opts)
     return {status = "error", error = "EpisodeInfoError", episode_id = episode_id}
   end
 
-  db.set_dandanplay_id(file_path, episode_id)
+  db.set_dandanplay_id(video_source.file_path, episode_id)
+  return {
+    status = "ok",
+    episode_info = episode_info,
+    anime_info = anime_info,
+  }
+end
 
+-- 处理 Bangumi 绑定和用户 episodes 加载。
+-- 成功返回 anime_info、bgm_id、bgm_url、episodes；失败返回 AnimeInfoError。
+local function bangumi_context_process(sync_opts, video_source, episode_id, anime_info)
   if not anime_info then
     local anime_id = math.floor(episode_id / 10000)
-    anime_info = get_anime_info_cached(episode_id, anime_id, {force_refresh = refresh})
+    anime_info = get_anime_info_cached(episode_id, anime_id, {force_refresh = sync_opts.refresh})
   end
 
   if not anime_info then
@@ -785,7 +861,7 @@ local function sync_context_execute(opts)
     }
   end
 
-  local bgm_id, bgm_url, bgm_source = resolve_bgm_binding(anime_info, episode_id)
+  local bgm_id, bgm_url, bgm_source = bangumi_binding_process(anime_info, episode_id)
   mp.msg.verbose(
     string.format(
       "sync_context: 解析 bgm_id=%s source=%s",
@@ -809,30 +885,83 @@ local function sync_context_execute(opts)
       episode_id = episode_id,
     }
   end
-  if bgm_id then
-    db.set_bgm_id(file_path, bgm_id)
-  end
+
+  db.set_bgm_id(video_source.file_path, bgm_id)
   local episodes = nil
-  if ensure_episodes then
-    episodes = get_user_episodes_cached(episode_id, bgm_id, {force_refresh = refresh})
+  if sync_opts.ensure_episodes then
+    episodes = get_user_episodes_cached(episode_id, bgm_id, {force_refresh = sync_opts.refresh})
     mp.msg.verbose("sync_context: episodes 已加载=" .. tostring(episodes ~= nil))
   end
 
   return {
     status = "ok",
-    context = {
-      file_path = file_path,
-      episode_id = episode_id,
-      episode_info = episode_info,
-      anime_info = anime_info,
-      bgm_id = bgm_id,
-      bgm_url = bgm_url or (bgm_id and ("https://bgm.tv/subject/" .. tostring(bgm_id)) or nil),
-      episodes = episodes,
-      storage = storage_config,
-    },
+    anime_info = anime_info,
+    bgm_id = bgm_id,
+    bgm_url = bgm_url,
+    episodes = episodes,
   }
 end
 
+-- sync_context 主编排函数，按来源、状态、匹配、Bangumi 的顺序串联各阶段。
+-- 返回 status=ok/select/error，保持 M.sync_context 和 M.match 的对外契约。
+local function sync_context_execute(opts)
+  local sync_opts = sync_opts_normalize(opts)
+  mp.msg.verbose(
+    string.format(
+      "sync_context: 开始 source=%s force_refresh=%s ensure_episodes=%s force_episode_id=%s",
+      tostring(sync_opts.source),
+      tostring(sync_opts.force_refresh == true),
+      tostring(sync_opts.ensure_episodes),
+      tostring(sync_opts.force_episode_id)
+    )
+  )
+
+  local video_source = video_source_process(sync_opts)
+  if video_source.status ~= "ok" then
+    return video_source
+  end
+
+  local sync_state = load_sync_state_from_db(sync_opts, video_source)
+  local manual_result = manual_bangumi_context_process(sync_opts, video_source, sync_state)
+  if manual_result then
+    return manual_result
+  end
+
+  local dandanplay_result = dandanplay_context_process(sync_opts, video_source, sync_state)
+  if dandanplay_result.status ~= "ok" then
+    return dandanplay_result
+  end
+
+  local episode_result = episode_info_ensure_or_rebuild(
+    sync_opts,
+    video_source,
+    dandanplay_result.episode_id,
+    dandanplay_result.episode_info
+  )
+  if episode_result.status ~= "ok" then
+    return episode_result
+  end
+
+  local bangumi_result = bangumi_context_process(
+    sync_opts,
+    video_source,
+    dandanplay_result.episode_id,
+    episode_result.anime_info
+  )
+  if bangumi_result.status ~= "ok" then
+    return bangumi_result
+  end
+
+  return sync_context_build(
+    video_source,
+    dandanplay_result.episode_id,
+    episode_result.episode_info,
+    bangumi_result.anime_info,
+    bangumi_result.bgm_id,
+    bangumi_result.bgm_url,
+    bangumi_result.episodes
+  )
+end
 function M.sync_context(opts)
   return {
     execute = function()
