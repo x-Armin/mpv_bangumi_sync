@@ -1,5 +1,5 @@
 local SCRIPT_NAME = "mpv_bangumi_sync"
-local SCRIPT_VERSION = "1.0.0"
+local SCRIPT_VERSION = "1.1.0"
 
 local config = require "src.config"
 local sync_context = require "src.services.sync_context"

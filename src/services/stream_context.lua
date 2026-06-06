@@ -176,7 +176,7 @@ local function search_bangumi_subject(title_info)
     "search"
   )
   if not bgm_id then
-    mp.msg.verbose(
+    mp.msg.error(
       "stream_context: Bangumi搜索结果未达到自动绑定阈值 "
         .. format_match_failure_reason(title_info, reason)
     )
