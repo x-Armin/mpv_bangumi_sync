@@ -1,7 +1,6 @@
 local utils = require "src.utils"
 local mp_utils = require "mp.utils"
 local db = require "src.db"
-local paths = require "src.paths"
 local bangumi_api = require "src.bangumi_api"
 local dandanplay_api = require "src.dandanplay_api"
 local video_info = require "src.video_info"
@@ -9,6 +8,8 @@ local config = require "src.config"
 local json_store = require "src.core.json_store"
 local storage_gate = require "src.core.storage_gate"
 local episode_matcher = require "src.episode_matcher"
+local title_guess = require "src.title_guess"
+local title_variants = require "src.title_variants"
 
 local M = {}
 
@@ -34,91 +35,6 @@ local function get_current_file_path()
     return nil
   end
   return mp.command_native({"normalize-path", file_path})
-end
-
-local function ensure_parent_dir(path)
-  if not path or path == "" then
-    return
-  end
-  local normalized = path:gsub("\\", "/")
-  local dir_path = normalized:match("^(.+)/[^/]+$")
-  if dir_path then
-    paths.ensure_dir(dir_path)
-  end
-end
-
-local function read_json_file(path)
-  local info = mp_utils.file_info(path)
-  if not info or not info.is_file then
-    return nil
-  end
-  local file = io.open(path, "r")
-  if not file then
-    return nil
-  end
-  local content = file:read("*all")
-  file:close()
-  if not content or content == "" then
-    return nil
-  end
-  return mp_utils.parse_json(content)
-end
-
-local function write_json_file(path, data)
-  if not data then
-    return false
-  end
-  local json = mp_utils.format_json(data)
-  if not json then
-    return false
-  end
-  ensure_parent_dir(path)
-  local file = io.open(path, "w")
-  if not file then
-    return false
-  end
-  file:write(json)
-  file:close()
-  return true
-end
-
-local function is_cache_fresh(path, max_age)
-  local info = mp_utils.file_info(path)
-  if not info or not info.is_file then
-    return false
-  end
-  local age = os.time() - info.mtime
-  return age <= max_age
-end
-
-local function read_cached_json(path, max_age, validate)
-  if not is_cache_fresh(path, max_age) then
-    return nil
-  end
-  local data = read_json_file(path)
-  if not data then
-    return nil
-  end
-  if validate and not validate(data) then
-    return nil
-  end
-  return data
-end
-
-read_json_file = function(path)
-  return json_store.read(path)
-end
-
-write_json_file = function(path, data)
-  return json_store.write(path, data, {atomic = true})
-end
-
-is_cache_fresh = function(path, max_age)
-  return json_store.is_fresh(path, max_age)
-end
-
-read_cached_json = function(path, max_age, validate)
-  return json_store.read(path, {max_age = max_age, validate = validate})
 end
 
 local function build_episode_info_from_anime(anime_info, episode_id)
@@ -148,9 +64,12 @@ local function get_anime_info_cached(episode_id, anime_id, opts)
   local force_refresh = opts and opts.force_refresh
   local info_path = db.get_path(episode_id, "info")
   if not force_refresh then
-    local cached = read_cached_json(info_path, INFO_CACHE_MAX_AGE, function(data)
-      return data and data.episodes
-    end)
+    local cached = json_store.read(info_path, {
+      max_age = INFO_CACHE_MAX_AGE,
+      validate = function(data)
+        return data and data.episodes
+      end,
+    })
     if cached then
       mp.msg.verbose(
         string.format(
@@ -174,7 +93,7 @@ local function get_anime_info_cached(episode_id, anime_id, opts)
   )
   local fresh = dandanplay_api.get_anime_info(anime_id)
   if fresh and fresh.episodes then
-    write_json_file(info_path, fresh)
+    json_store.write(info_path, fresh, {atomic = true})
     return fresh
   end
   mp.msg.error(
@@ -194,9 +113,12 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
   local force_refresh = opts and opts.force_refresh
   local episodes_path = db.get_path(episode_id, "episodes")
   if not force_refresh then
-    local cached = read_cached_json(episodes_path, EPISODES_CACHE_MAX_AGE, function(data)
-      return data and data.data
-    end)
+    local cached = json_store.read(episodes_path, {
+      max_age = EPISODES_CACHE_MAX_AGE,
+      validate = function(data)
+        return data and data.data
+      end,
+    })
     if cached then
       mp.msg.verbose(
         string.format(
@@ -222,13 +144,8 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
   if not episodes or not episodes.body or not episodes.body.data then
     return nil
   end
-  write_json_file(episodes_path, episodes.body)
+  json_store.write(episodes_path, episodes.body, {atomic = true})
   return episodes.body
-end
-
--- 检查视频是否在存储路径中
-local function resolve_storage(file_path)
-  return storage_gate.resolve_storage(file_path)
 end
 
 -- 构造episode match
@@ -281,12 +198,119 @@ local function split_file_path(path)
   return dir_path, filename
 end
 
-local function get_episode_no_from_filename(filename)
-  local info = utils.extract_info_from_filename(filename or "")
-  if not info or type(info.episode) ~= "number" then
-    return nil
+local function append_unique(list, seen, value)
+  if not value or value == "" or seen[value] then
+    return
   end
-  return info.episode
+  seen[value] = true
+  list[#list + 1] = value
+end
+
+local function collect_title_variants(title)
+  local variants = {}
+  local seen = {}
+  for _, value in ipairs(title_variants.normalized_variants(title) or {}) do
+    append_unique(variants, seen, value)
+  end
+  append_unique(variants, seen, title_guess.normalize_title(title))
+  return variants
+end
+
+local function normalized_titles_match(left, right)
+  local left_variants = collect_title_variants(left)
+  local right_variants = collect_title_variants(right)
+  for _, a in ipairs(left_variants) do
+    for _, b in ipairs(right_variants) do
+      if a == b then
+        return true
+      end
+      if #a >= 6 and #b >= 6 and (a:find(b, 1, true) or b:find(a, 1, true)) then
+        return true
+      end
+    end
+  end
+  return utils.fuzzy_match_title(left or "", right or "") >= 0.72
+end
+
+local function filename_matches_title(filename, cached_title)
+  local current_info = utils.extract_info_from_filename(filename or "")
+  local current_title = current_info and current_info.title or nil
+  if not current_title or not cached_title then
+    return false
+  end
+  return normalized_titles_match(current_title, cached_title)
+end
+
+local function folder_entry_matches_current(entries, filename)
+  local current_info = utils.extract_info_from_filename(filename or "")
+  local current_title = current_info and current_info.title or nil
+  if not current_title then
+    return false
+  end
+  for cached_filename, _ in pairs(entries or {}) do
+    if cached_filename ~= filename then
+      local cached_info = utils.extract_info_from_filename(cached_filename or "")
+      local cached_title = cached_info and cached_info.title or nil
+      if cached_title and normalized_titles_match(current_title, cached_title) then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+local function anime_info_matches_filename(anime_info, filename)
+  if not anime_info then
+    return false
+  end
+  local candidates = {
+    anime_info.animeTitle,
+    anime_info.searchKeyword,
+  }
+  for _, item in ipairs(anime_info.titles or {}) do
+    candidates[#candidates + 1] = item and item.title or nil
+  end
+  for _, title in ipairs(candidates) do
+    if filename_matches_title(filename, title) then
+      return true
+    end
+  end
+  return false
+end
+
+local function can_use_autoload_source(video_source, sync_state, episode_id)
+  if not episode_id then
+    return false
+  end
+  local folder_info = sync_state and sync_state.folder_info or nil
+  if folder_entry_matches_current(folder_info and folder_info.entries, video_source.filename) then
+    return true
+  end
+
+  local episode_info = db.get_episode_info(episode_id)
+  if episode_info and filename_matches_title(video_source.filename, episode_info.animeTitle) then
+    return true
+  end
+
+  local anime_info = json_store.read(db.get_path(episode_id, "info"), {
+    max_age = INFO_CACHE_MAX_AGE,
+    validate = function(data)
+      return data and (data.animeTitle or data.searchKeyword or data.titles)
+    end,
+  })
+  if anime_info_matches_filename(anime_info, video_source.filename) then
+    return true
+  end
+
+  mp.msg.verbose(
+    string.format(
+      "sync_context: autoload cache mismatch dir=%s filename=%s episode_id=%s",
+      tostring(video_source.dir_path),
+      tostring(video_source.filename),
+      tostring(episode_id)
+    )
+  )
+  return false
 end
 
 local function find_target_episode(episodes, episode_no)
@@ -301,9 +325,12 @@ local function get_subject_cached(bgm_id, episode_id, opts)
   local force_refresh = opts and opts.force_refresh
   local info_path = db.get_path(episode_id, "info")
   if not force_refresh then
-    local cached = read_cached_json(info_path, INFO_CACHE_MAX_AGE, function(data)
-      return data and data.id
-    end)
+    local cached = json_store.read(info_path, {
+      max_age = INFO_CACHE_MAX_AGE,
+      validate = function(data)
+        return data and data.id
+      end,
+    })
     if cached then
       mp.msg.verbose(
         string.format(
@@ -327,7 +354,7 @@ local function get_subject_cached(bgm_id, episode_id, opts)
   if not res or not res.body or tonumber(res.status_code or 0) >= 400 then
     return nil
   end
-  write_json_file(info_path, res.body)
+  json_store.write(info_path, res.body, {atomic = true})
   return res.body
 end
 
@@ -482,7 +509,7 @@ local function bangumi_binding_process(anime_info, episode_id)
 
   if resolved_id then
     anime_info.bangumiUrl = resolved_url
-    write_json_file(db.get_path(episode_id, "info"), anime_info)
+    json_store.write(db.get_path(episode_id, "info"), anime_info, {atomic = true})
     return resolved_id, resolved_url, source
   end
 
@@ -542,7 +569,7 @@ local function video_source_process(sync_opts)
     storages = {},
     batch_sync_threshold = 1,
     matched_storage = "network_file",
-  } or resolve_storage(file_path)
+  } or storage_gate.resolve_storage(file_path)
   if not storage_config then
     mp.msg.info("sync_context: 文件不在配置的存储路径内")
     return {
@@ -623,7 +650,8 @@ local function manual_bangumi_context_process(sync_opts, video_source, sync_stat
     return nil
   end
 
-  local episode_no = get_episode_no_from_filename(video_source.filename)
+  local file_info = utils.extract_info_from_filename(video_source.filename or "")
+  local episode_no = file_info and file_info.episode or nil
   if not episode_no then
     mp.msg.error("无法从文件名解析集数: " .. tostring(video_source.filename))
     return {
@@ -723,19 +751,26 @@ end
 local function dandanplay_context_process(sync_opts, video_source, sync_state)
   local episode_id = sync_state.episode_id
   local episode_info = nil
+  local episode_source = episode_id and "db" or nil
 
   if sync_opts.force_episode_id then
     mp.msg.verbose("sync_context: 强制 episode_id=" .. tostring(sync_opts.force_episode_id))
     db.set_dandanplay_id(video_source.file_path, sync_opts.force_episode_id)
+    episode_source = "force"
   end
 
-  if not episode_id then
+  if not episode_id and not sync_state.skip_autoload then
     local autoload_id = (not video_source.is_remote_file)
       and db.get_autoload_source(video_source.dir_path, video_source.filename)
       or nil
     if autoload_id then
-      mp.msg.verbose("sync_context: 自动加载 episode_id=" .. tostring(autoload_id))
-      episode_id = autoload_id
+      if can_use_autoload_source(video_source, sync_state, autoload_id) then
+        mp.msg.verbose("sync_context: autoload episode_id=" .. tostring(autoload_id))
+        episode_id = autoload_id
+        episode_source = "autoload"
+      else
+        mp.msg.verbose("sync_context: autoload skipped, fallback to dandanplay match")
+      end
     else
       mp.msg.verbose("sync_context: 自动加载episode_id失败")
     end
@@ -763,6 +798,7 @@ local function dandanplay_context_process(sync_opts, video_source, sync_state)
             )
             episode_info = match
             episode_id = match.episodeId
+            episode_source = "match"
             db.set_dandanplay_id(video_source.file_path, episode_id)
             db.set_episode_info(episode_id, episode_info)
             break
@@ -789,6 +825,7 @@ local function dandanplay_context_process(sync_opts, video_source, sync_state)
       if episode_info then
         mp.msg.verbose("sync_context: 选中匹配 episode_id=" .. tostring(episode_info.episodeId))
         episode_id = episode_info.episodeId
+        episode_source = "match"
         db.set_dandanplay_id(video_source.file_path, episode_id)
         db.set_episode_info(episode_id, episode_info)
       end
@@ -811,6 +848,7 @@ local function dandanplay_context_process(sync_opts, video_source, sync_state)
     status = "ok",
     episode_id = episode_id,
     episode_info = episode_info,
+    episode_source = episode_source,
   }
 end
 
@@ -938,6 +976,25 @@ local function sync_context_execute(opts)
     dandanplay_result.episode_id,
     dandanplay_result.episode_info
   )
+  if episode_result.status ~= "ok"
+    and dandanplay_result.episode_source ~= "match"
+    and dandanplay_result.episode_source ~= "force" then
+    mp.msg.verbose(
+      "sync_context: cached episode_id invalid, fallback to dandanplay match"
+    )
+    sync_state.episode_id = nil
+    sync_state.skip_autoload = true
+    dandanplay_result = dandanplay_context_process(sync_opts, video_source, sync_state)
+    if dandanplay_result.status ~= "ok" then
+      return dandanplay_result
+    end
+    episode_result = episode_info_ensure_or_rebuild(
+      sync_opts,
+      video_source,
+      dandanplay_result.episode_id,
+      dandanplay_result.episode_info
+    )
+  end
   if episode_result.status ~= "ok" then
     return episode_result
   end

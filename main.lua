@@ -10,6 +10,7 @@ local bangumi_api = require "src.bangumi_api"
 local db = require "src.db"
 local utils = require "src.utils"
 local mp_utils = require "mp.utils"
+local json_store = require "src.core.json_store"
 local episode_status = require "src.services.episode_status"
 local title_guess = require "src.title_guess"
 local input = require "mp.input"
@@ -522,16 +523,6 @@ local function get_info_menu_state()
   }
 end
 
-local function write_json_file(path, data)
-  local file = path and io.open(path, "w") or nil
-  if not file then
-    return false
-  end
-  file:write(mp_utils.format_json(data) or "{}")
-  file:close()
-  return true
-end
-
 local function update_local_episode_status(context, episode_item, status)
   if not episode_item then
     return false
@@ -540,7 +531,7 @@ local function update_local_episode_status(context, episode_item, status)
     return true
   end
   episode_item.type = status
-  return write_json_file(context.episodes_path, context.episodes_data)
+  return json_store.write(context.episodes_path, context.episodes_data, {atomic = true})
 end
 
 local function refresh_current_ep_context(force_refresh)
@@ -651,10 +642,6 @@ mark_current_episode_status = function(opts)
     mp.osd_message(message)
   end
   return true
-end
-
-local function set_current_episode_status(status)
-  mark_current_episode_status({status = status, source = "manual", batch = false})
 end
 
 local function apply_auto_mark_mode(opts)
@@ -856,7 +843,7 @@ end)
 
 mp.register_script_message("bgm-set-episode-status", function(status)
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_status")
-  set_current_episode_status(status)
+  mark_current_episode_status({status = status, source = "manual", batch = false})
 end)
 
 mp.register_script_message("bgm-open-search-from-info", function()
