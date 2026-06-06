@@ -12,6 +12,7 @@
 - [配置](#配置)
   - [常用选项](#常用选项)
 - [使用](#使用)
+  - [网络视频播放](#网络视频播放)
   - [手动匹配](#手动匹配)
 - [数据目录](#数据目录)
 - [注意](#注意)
@@ -26,6 +27,7 @@
 - 支持自动点格子开关，禁用后仅展示信息，不自动标记 Bangumi 格子
 - 支持番剧信息窗口，查看当前条目、剧集进度和单集状态
 - 支持手动匹配弹弹play结果，或直接搜索 Bangumi 条目绑定当前目录
+- 支持网络视频播放，根据 URL 自动选择完整文件匹配或流媒体标题匹配
 
 番剧信息窗口：
 
@@ -108,6 +110,7 @@ storage1_batch_sync_threshold=1
 storage2_batch_sync_threshold=4
 bangumi_api=https://api.bgm.tv
 bgm_proxy=
+network_file_hosts=
 ```
 
 - `enable_auto_mark`：是否自动点 Bangumi 格子。设为 `no` 时只展示信息。
@@ -115,6 +118,7 @@ bgm_proxy=
 - `storage*_batch_sync_threshold`：待同步剧集数量达到阈值时批量同步。设为 `0` 时不按数量自动同步，但退出 mpv 或关闭自动点格子时仍会同步。
 - `bangumi_api`：Bangumi API URL，可设置为镜像或兼容 API 地址。必须使用完整 URL，例如 `https://api.bgm.tv`。**请自行确认 API URL 的安全性；因使用第三方 API URL 产生的问题，本插件不负责**
 - `bgm_proxy`：Bangumi API 代理，留空表示不使用代理。该代理不影响弹弹play API。
+- `network_file_hosts`：网络 URL 完整文件域名/IP 列表，使用英文逗号分隔。命中的 host 会按完整视频文件处理。
 
 代理示例：
 
@@ -141,6 +145,21 @@ Alt+o
 command:info:script-message open-bangumi-info?番剧信息
 ```
 
+### 网络视频播放
+
+播放网络 URL 时，插件会自动初始化番剧匹配流程，并按 URL 类型选择匹配模式。
+
+- 完整文件：适用于 WebDAV、直链视频等场景。插件会通过视频文件后缀或 `network_file_hosts` 判断，读取网络文件前 16MB 计算 hash，再使用弹弹play匹配番剧和剧集。
+- 流媒体：适用于普通在线播放源。插件会从 mpv metadata、播放列表标题、media-title、URL 等信息中推断标题，并使用 Bangumi 搜索和手动绑定流程。
+
+如果自动判断不准确，可以在番剧信息窗口中切换“匹配模式”。本地文件播放不会显示该选项。
+
+对于没有明显视频文件后缀、但实际是完整视频文件的网络地址，可以在配置中加入 host 白名单：
+
+```conf
+network_file_hosts=example.com,192.168.1.10
+```
+
 ### 手动匹配
 
 自动匹配失败或结果不准确时，可以从番剧信息窗口进入手动匹配。
@@ -163,7 +182,7 @@ portable_config/script-data/mpv_bangumi_sync/
 ## 注意
 
 - 本插件主要在 Windows 10 环境测试，其他系统未充分验证。
-- 插件只在 `storage1` 和 `storage2` 指定目录下生效。
+- 本地文件只在 `storage1` 和 `storage2` 指定目录下生效；网络视频不受本地存储目录限制。
 - 若当前集打开时已是“已看”，不会再启动进度检测定时器。
 - 关闭 mpv 时会同步尚未 flush 的 pending 记录；pending 较多时可能影响退出速度。如果比较介意的话，请将storage*_batch_sync_threshold修改到1
 - 如果同一路径同时匹配两个 storage 组，会使用匹配路径更长、更具体的那一组配置。
