@@ -54,6 +54,7 @@ local function new_data()
     version = 1,
     aliases = {},
     subjects = {},
+    url_episode_bindings = {},
   }
 end
 
@@ -67,6 +68,9 @@ local function normalize_data(data)
   end
   if type(data.subjects) ~= "table" then
     data.subjects = {}
+  end
+  if type(data.url_episode_bindings) ~= "table" then
+    data.url_episode_bindings = {}
   end
   return data
 end
@@ -801,6 +805,41 @@ function M.save_subject(subject)
   if not upsert_subject(data, subject) then
     return false
   end
+  return save_data(data)
+end
+
+function M.get_url_episode_binding(url_key)
+  if not url_key or url_key == "" then
+    return nil
+  end
+  local data = load_data()
+  local binding = data.url_episode_bindings[tostring(url_key)]
+  if type(binding) ~= "table" or not binding.bgm_id or not binding.bgm_episode_id then
+    return nil
+  end
+  return binding
+end
+
+function M.bind_url_episode(url_key, binding, subject)
+  if not url_key or url_key == "" or type(binding) ~= "table" then
+    return false
+  end
+  local bgm_id = tonumber(binding.bgm_id)
+  local bgm_episode_id = tonumber(binding.bgm_episode_id)
+  if not bgm_id or not bgm_episode_id then
+    return false
+  end
+
+  local data = load_data()
+  if subject then
+    upsert_subject(data, subject)
+  end
+  data.url_episode_bindings[tostring(url_key)] = {
+    bgm_id = bgm_id,
+    bgm_episode_id = bgm_episode_id,
+    source = binding.source or "manual",
+    updated_at = os.time(),
+  }
   return save_data(data)
 end
 

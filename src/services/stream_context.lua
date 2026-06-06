@@ -4,6 +4,7 @@ local sync_context = require "src.services.sync_context"
 local bangumi_api = require "src.bangumi_api"
 local episode_matcher = require "src.episode_matcher"
 local utils = require "src.utils"
+local bangumi_episode_selector = require "src.services.bangumi_episode_selector"
 
 local M = {}
 
@@ -235,6 +236,112 @@ local function resolve_target_episode(episodes, episode_no)
   return match and match.target or nil, match
 end
 
+local function get_stream_episodes(runtime_episode_id, bgm_id, opts)
+  local episodes = sync_context.get_user_episodes_cached(
+    runtime_episode_id,
+    bgm_id,
+    {force_refresh = opts and opts.force_refresh == true}
+  )
+  if episodes and episodes.data then
+    return episodes
+  end
+
+  return bangumi_episode_selector.fetch_subject_episodes(bgm_id)
+end
+
+local function current_url_key()
+  local path = mp.get_property("path")
+  if not path or path == "" then
+    return nil
+  end
+  return utils.stable_url_key(path)
+end
+
+local function build_context_from_url_binding(binding, opts)
+  local bgm_id = tonumber(binding and binding.bgm_id)
+  local bgm_episode_id = tonumber(binding and binding.bgm_episode_id)
+  if not bgm_id or not bgm_episode_id then
+    return nil
+  end
+
+  local runtime_episode_id = bgm_id * 10000
+  local episodes = get_stream_episodes(runtime_episode_id, bgm_id, opts)
+
+  local subject = fetch_subject(bgm_id) or {}
+  local anime_title = first_non_empty(
+    subject.name_cn,
+    subject.name,
+    "Bangumi " .. tostring(bgm_id)
+  )
+  local _, selected_episode = bangumi_episode_selector.find_episode_by_bgm_id(episodes, bgm_episode_id)
+  local episode_ep = selected_episode and tonumber(selected_episode.ep) or nil
+  local episode_sort = selected_episode and tonumber(selected_episode.sort) or nil
+  local episode_title = first_non_empty(
+    selected_episode and selected_episode.name_cn,
+    selected_episode and selected_episode.name,
+    episode_ep and ("Episode " .. tostring(episode_ep)) or nil
+  )
+  runtime_episode_id = bgm_id * 10000 + (episode_ep or episode_sort or 0)
+  if not episodes then
+    episodes = {
+      data = {
+        {
+          type = 0,
+          episode = {
+            id = bgm_episode_id,
+            ep = episode_ep,
+            sort = episode_sort,
+            name = episode_title,
+            name_cn = episode_title,
+            type = 0,
+          },
+        },
+      },
+      total = 1,
+      limit = 1,
+      offset = 0,
+    }
+  end
+  local bgm_url = "https://bgm.tv/subject/" .. tostring(bgm_id)
+  local episode_info = {
+    episodeId = runtime_episode_id,
+    animeId = bgm_id,
+    episodeEp = episode_ep,
+    episodeSort = episode_sort,
+    episodeMatchMode = "manual_url",
+    animeTitle = anime_title,
+    episodeTitle = episode_title,
+    bgmEpisodeId = bgm_episode_id,
+    shift = 0.0,
+    stream = true,
+  }
+  local anime_info = {
+    animeTitle = anime_title,
+    bangumiUrl = bgm_url,
+    stream = true,
+    streamMatchSource = binding.source or "manual_url",
+  }
+
+  return {
+    status = "ok",
+    context = {
+      file_path = mp.get_property("path"),
+      episode_id = runtime_episode_id,
+      episode_info = episode_info,
+      anime_info = anime_info,
+      bgm_id = bgm_id,
+      bgm_url = bgm_url,
+      episodes = episodes,
+      storage = {
+        key = "stream",
+        storages = {},
+        batch_sync_threshold = 1,
+        matched_storage = "stream",
+      },
+    },
+  }
+end
+
 local function build_context(title_info, bgm_id, bgm_source, subject, opts)
   if not title_info.episode_no then
     return {
@@ -246,11 +353,7 @@ local function build_context(title_info, bgm_id, bgm_source, subject, opts)
   end
 
   local runtime_episode_id = tonumber(bgm_id) * 10000 + title_info.episode_no
-  local episodes = sync_context.get_user_episodes_cached(
-    runtime_episode_id,
-    bgm_id,
-    {force_refresh = opts and opts.force_refresh == true}
-  )
+  local episodes = get_stream_episodes(runtime_episode_id, bgm_id, opts)
   if not episodes or not episodes.data then
     return {
       status = "error",
@@ -342,6 +445,14 @@ end
 
 local function sync_context_execute(opts)
   opts = opts or {}
+  local url_binding = stream_data.get_url_episode_binding(current_url_key())
+  if url_binding then
+    local bound_context = build_context_from_url_binding(url_binding, opts)
+    if bound_context then
+      return bound_context
+    end
+  end
+
   local title_info = title_guess.get_current_title_info()
   if not title_info or not title_info.normalized_title then
     local fallback = fallback_to_dandanplay_file_match(opts, "TitleUnavailable")

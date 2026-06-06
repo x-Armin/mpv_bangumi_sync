@@ -13,6 +13,8 @@ local mp_utils = require "mp.utils"
 local json_store = require "src.core.json_store"
 local episode_status = require "src.services.episode_status"
 local title_guess = require "src.title_guess"
+local stream_data = require "src.stream_data"
+local bangumi_episode_selector = require "src.services.bangumi_episode_selector"
 local input = require "mp.input"
 local ui_menu = require "src.ui_menu"
 
@@ -27,6 +29,7 @@ EpisodeProgressText = "未获取"
 UpdateEpisodeTimer = nil
 EpisodesReady = false
 MatchResults = nil
+PendingBangumiEpisodeSelection = nil
 UoscAvailable = false
 StorageConfig = nil
 AutoMarkEnabled = Options.enable_auto_mark ~= false
@@ -81,6 +84,7 @@ local function reset_globals()
     UpdateEpisodeTimer = nil
   end
   MatchResults = nil
+  PendingBangumiEpisodeSelection = nil
 end
 
 local function resolve_auto_mark_enabled()
@@ -190,6 +194,19 @@ end
 local function is_current_stream()
   local path = mp.get_property("path")
   return utils.is_protocol(path)
+end
+
+local function first_non_empty(...)
+  for i = 1, select("#", ...) do
+    local value = select(i, ...)
+    if value ~= nil then
+      value = tostring(value):match("^%s*(.-)%s*$")
+      if value ~= "" then
+        return value
+      end
+    end
+  end
+  return nil
 end
 
 local VIDEO_EXTENSIONS = {
@@ -459,33 +476,85 @@ local function init(episode_id, opts)
   }
 end
 
-local function bind_manual_bgm_and_reload(bgm_id)
-  if is_current_stream_mode() then
-    local ok, err = stream_context.bind_current_subject(bgm_id)
-    if not ok then
-      return false, err or "SaveFailed"
+local function open_bangumi_episode_selection(bgm_id, mode, use_input)
+  bgm_id = tonumber(bgm_id)
+  mode = mode or "stream"
+  if not bgm_id then
+    mp.osd_message("Invalid Bangumi subject ID", 2)
+    return false
+  end
+
+  if not use_input then
+    ui_menu.open_episode_picker({
+      type = "menu_bgm_bangumi_episodes",
+      title = "Select Bangumi episode",
+      loading_message = "Loading Bangumi episodes...",
+    })
+  end
+
+  local subject_res = bangumi_api.get_subject(bgm_id)
+  local subject = subject_res and tonumber(subject_res.status_code or 0) < 400 and subject_res.body or nil
+  local episodes = bangumi_episode_selector.fetch_subject_episodes(bgm_id)
+  if not episodes or not episodes.data then
+    if not use_input then
+      ui_menu.update_episode_picker({
+        type = "menu_bgm_bangumi_episodes",
+        title = "Select Bangumi episode",
+        footnote = "Failed to load Bangumi episodes",
+        items = {},
+        empty_message = "Failed to load Bangumi episodes",
+      })
     end
-    init(nil, { force_refresh = true, source = "manual_bgm", network_mode = "stream" })
-    return true, nil
+    mp.osd_message("Failed to load Bangumi episodes", 3)
+    return false
   end
 
-  local file_path = get_current_db_path()
-  if not file_path then
-    return false, "PathUnavailable"
+  local items = bangumi_episode_selector.display_items_from_episodes(episodes)
+  if #items == 0 then
+    if not use_input then
+      ui_menu.update_episode_picker({
+        type = "menu_bgm_bangumi_episodes",
+        title = "Select Bangumi episode",
+        footnote = "No Bangumi episodes found",
+        items = {},
+        empty_message = "No Bangumi episodes found",
+      })
+    end
+    mp.osd_message("No Bangumi episodes found", 3)
+    return false
   end
 
-  local ok = db.set_manual_bgm_id(file_path, bgm_id)
-  if not ok then
-    return false, "SaveFailed"
-  end
+  PendingBangumiEpisodeSelection = {
+    mode = mode,
+    bgm_id = bgm_id,
+    subject = subject,
+    episodes = episodes,
+  }
 
-  init(nil, {
-    force_refresh = true,
-    source = "manual_bgm",
-    manual_bgm_id = bgm_id,
-    network_mode = resolve_network_mode(mp.get_property("path")),
-  })
-  return true, nil
+  local subject_title = first_non_empty(subject and subject.name_cn, subject and subject.name)
+    or ("Bangumi " .. tostring(bgm_id))
+  local props = {
+    type = "menu_bgm_bangumi_episodes",
+    title = "Select episode: " .. subject_title,
+    prompt = "Select Bangumi episode:",
+    footnote = "Use / to filter",
+    select_message = "bgm-select-bangumi-episode",
+    items = items,
+    empty_message = "No Bangumi episodes found",
+  }
+  if use_input then
+    return ui_menu.open_episode_picker_input(props)
+  end
+  ui_menu.update_episode_picker(props)
+  return true
+end
+
+local function open_bangumi_episode_menu(bgm_id, mode)
+  return open_bangumi_episode_selection(bgm_id, mode, false)
+end
+
+local function open_bangumi_episode_input(bgm_id, mode)
+  return open_bangumi_episode_selection(bgm_id, mode, true)
 end
 
 flush_pending_updates = function(reason, opts)
@@ -1023,20 +1092,66 @@ mp.register_script_message("bgm-select-subject", function(subject_id)
   end
 
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_subject")
-  local ok, err_code = bind_manual_bgm_and_reload(bgm_id)
-  if not ok then
-    if err_code == "PathUnavailable" then
-      mp.osd_message("无法获取当前文件路径", 2)
-      return
-    end
-    if err_code == "TitleUnavailable" then
-      mp.osd_message("无法解析当前流媒体标题", 2)
-      return
-    end
-    mp.osd_message("保存Bangumi目录绑定失败", 2)
+  open_bangumi_episode_menu(bgm_id, is_current_stream_mode() and "stream" or "local")
+end)
+
+mp.register_script_message("bgm-select-bangumi-episode", function(episode_id)
+  local selection = PendingBangumiEpisodeSelection
+  local _, episode = bangumi_episode_selector.find_episode_by_bgm_id(
+    selection and selection.episodes,
+    episode_id
+  )
+  if not selection or not episode then
+    mp.osd_message("Invalid Bangumi episode", 2)
     return
   end
-  mp.osd_message(is_current_stream_mode() and "已绑定当前流媒体Bangumi条目" or "已绑定当前目录Bangumi条目", 2)
+
+  local bgm_id = tonumber(selection.bgm_id)
+  local binding = {
+    bgm_id = bgm_id,
+    bgm_episode_id = episode.id,
+    source = "manual_url",
+  }
+
+  if selection.mode == "stream" then
+    local path = mp.get_property("path")
+    local url_key = path and utils.stable_url_key(path) or nil
+    if not url_key then
+      mp.osd_message("Unable to get current URL", 2)
+      return
+    end
+    local ok = stream_data.bind_url_episode(url_key, binding, selection.subject)
+    if not ok then
+      mp.osd_message("Failed to save episode binding", 3)
+      return
+    end
+    PendingBangumiEpisodeSelection = nil
+    mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_bangumi_episodes")
+    init(nil, { force_refresh = true, source = "manual_bgm", network_mode = "stream" })
+    mp.osd_message("Bound current stream Bangumi episode", 2)
+    return
+  end
+
+  local file_path = get_current_db_path()
+  if not file_path then
+    mp.osd_message("Unable to get current file path", 2)
+    return
+  end
+  local ok = db.set_manual_bgm_episode(file_path, bgm_id, binding)
+  if not ok then
+    mp.osd_message("Failed to save episode binding", 3)
+    return
+  end
+
+  PendingBangumiEpisodeSelection = nil
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_bangumi_episodes")
+  init(nil, {
+    force_refresh = true,
+    source = "manual_bgm",
+    manual_bgm_id = bgm_id,
+    network_mode = resolve_network_mode(mp.get_property("path")),
+  })
+  mp.osd_message("Bound current file Bangumi episode", 2)
 end)
 
 mp.register_script_message("bgm-search-episodes", function(anime_title, anime_id)
@@ -1046,45 +1161,40 @@ mp.register_script_message("bgm-search-episodes", function(anime_title, anime_id
   end
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_anime")
 
-  ui_menu.open_uosc_menu({
+  local title = string.format("Select episode: %s", anime_title or "")
+  ui_menu.open_episode_picker({
     type = "menu_bgm_episodes",
-    title = string.format("选择剧集: %s", anime_title),
-    search_style = "on_demand",
-    footnote = "正在加载剧集...",
-    items = { ui_menu.format_menu_item("加载中...") },
+    title = title,
+    loading_message = "Loading episodes...",
   })
 
   dandanplay_service.get_dandanplay_episodes(anime_id).async {
     resp = function(data)
       local items = {}
       for i, item in ipairs(data or {}) do
-        items[i] = {
+        items[#items + 1] = {
+          id = item.id,
           title = item.title,
           hint = tostring(i),
-          value = { "script-message-to", mp.get_script_name(), "bgm-select-episode", item.id },
-          keep_open = false,
-          selectable = true,
         }
       end
-      if #items == 0 then
-        items = { ui_menu.format_menu_item("没有找到匹配的剧集") }
-      end
-      ui_menu.update_uosc_menu({
+      ui_menu.update_episode_picker({
         type = "menu_bgm_episodes",
-        title = string.format("选择剧集: %s", anime_title),
-        search_style = "on_demand",
-        footnote = "使用 / 打开筛选",
+        title = title,
+        footnote = "Use / to filter",
+        select_message = "bgm-select-episode",
         items = items,
+        empty_message = "No matching episodes found",
       })
     end,
     err = function(err)
       mp.msg.error("获取剧集信息失败:", err)
-      ui_menu.update_uosc_menu({
+      ui_menu.update_episode_picker({
         type = "menu_bgm_episodes",
-        title = string.format("选择剧集: %s", anime_title),
-        search_style = "on_demand",
-        footnote = "获取失败，请重试",
-        items = { ui_menu.format_menu_item("获取剧集信息失败") },
+        title = title,
+        footnote = "Failed to load episodes",
+        items = {},
+        empty_message = "Failed to load episodes",
       })
     end,
   }
@@ -1121,24 +1231,6 @@ mp.register_script_message("manual-match", function()
     ui_menu.open_manual_match_source_menu()
     return
   end
-  local bind_manual_subject = function(bgm_id)
-    local ok, err_code = bind_manual_bgm_and_reload(bgm_id)
-    if not ok then
-      if err_code == "PathUnavailable" then
-        mp.msg.error("无法获取当前文件路径")
-        mp.osd_message("无法获取当前文件路径", 3)
-        return
-      end
-      if err_code == "TitleUnavailable" then
-        mp.msg.error("无法解析当前流媒体标题")
-        mp.osd_message("无法解析当前流媒体标题", 3)
-        return
-      end
-      mp.msg.error("保存Bangumi目录绑定失败")
-      mp.osd_message("保存Bangumi目录绑定失败", 3)
-      return
-    end
-  end
   local select_episode = function(anime_id)
     if not anime_id then
       mp.msg.error "无效的番剧ID"
@@ -1153,25 +1245,17 @@ mp.register_script_message("manual-match", function()
         end
         local episode_items = {}
         for i, item in ipairs(data) do
-          episode_items[i] = item.title
+          episode_items[#episode_items + 1] = {
+            id = item.id,
+            title = item.title,
+            hint = tostring(i),
+          }
         end
-        input.select {
-          prompt = "请选择正确剧集：",
+        ui_menu.open_episode_picker_input({
+          prompt = "Select episode:",
           items = episode_items,
-          submit = function(idx)
-            if idx < 1 or idx > #data then
-              mp.msg.error "无效的选择"
-              return
-            end
-            local selected_episode = data[idx]
-            mp.msg.verbose(
-              "选择的剧集",
-              selected_episode.id,
-              selected_episode.title
-            )
-            init(selected_episode.id, { force_refresh = true })
-          end,
-        }
+          select_message = "bgm-select-episode",
+        })
       end,
       err = function(err)
         mp.msg.error("获取剧集信息失败:", err)
@@ -1225,7 +1309,7 @@ mp.register_script_message("manual-match", function()
           return
         end
         local selected = data[idx]
-        bind_manual_subject(selected.id)
+        open_bangumi_episode_input(selected.id, is_current_stream_mode() and "stream" or "local")
       end,
     }
   end

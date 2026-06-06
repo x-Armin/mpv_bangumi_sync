@@ -164,6 +164,7 @@ function M.get(query)
           bgm_id = folder.bgm_id,
           dandanplay_id = entry.dandanplay_id,
           anime_id = folder.anime_id,
+          manual_bgm_episode_id = entry.manual_bgm_episode_id,
           manual = folder.manual == true,
         }
       end
@@ -194,6 +195,7 @@ function M.get(query)
           bgm_id = folder.bgm_id,
           dandanplay_id = entry.dandanplay_id,
           anime_id = folder.anime_id,
+          manual_bgm_episode_id = entry.manual_bgm_episode_id,
           manual = folder.manual == true,
         }
       end
@@ -309,6 +311,39 @@ function M.set_manual_bgm_id(path_or_dir, bgm_id)
   if filename then
     ensure_entry(folder, filename, normalized_path)
   end
+
+  save_db(db)
+  return true
+end
+
+function M.set_manual_bgm_episode(path, bgm_id, binding)
+  local id_ = tonumber(bgm_id)
+  local bgm_episode_id = binding and tonumber(binding.bgm_episode_id)
+  if not id_ or not bgm_episode_id then
+    return false
+  end
+
+  local db = load_db()
+  local dir, filename = split_path(path)
+  if not dir or not filename then
+    return false
+  end
+
+  local folder = ensure_folder(db, dir)
+  local entry = ensure_entry(folder, filename, path)
+  if not entry then
+    return false
+  end
+
+  folder.manual = true
+  folder.bgm_id = id_
+  folder.last_seen = os.time()
+  entry.manual_bgm_episode_id = bgm_episode_id
+  entry.manual_episode_id = nil
+  entry.manual_episode_ep = nil
+  entry.manual_episode_sort = nil
+  entry.manual_episode_title = nil
+  entry.manual_anime_title = nil
 
   save_db(db)
   return true

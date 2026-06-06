@@ -1,6 +1,7 @@
 local utils = require "src.utils"
 local mp_utils = require "mp.utils"
 local title_guess = require "src.title_guess"
+local input = require "mp.input"
 
 local M = {}
 
@@ -31,6 +32,94 @@ end
 function M.update_uosc_menu(props)
   local json_props = utils.format_json(props)
   mp.commandv("script-message-to", "uosc", "update-menu", json_props)
+end
+
+local function episode_picker_type(props)
+  return (props and props.type) or "menu_bgm_episodes"
+end
+
+local function episode_picker_title(props)
+  return (props and props.title) or "Select episode"
+end
+
+local function build_episode_picker_items(props)
+  local items = {}
+  for _, item in ipairs(props.items or {}) do
+    local id = item.id
+    if id ~= nil then
+      items[#items + 1] = {
+        title = item.title or ("#" .. tostring(id)),
+        hint = item.hint,
+        value = { "script-message-to", mp.get_script_name(), props.select_message, tostring(id) },
+        keep_open = false,
+        selectable = true,
+      }
+    end
+  end
+  if #items == 0 then
+    items = { M.format_menu_item(props.empty_message or "No episodes found") }
+  end
+  return items
+end
+
+function M.open_episode_picker(props)
+  props = props or {}
+  M.open_uosc_menu({
+    type = episode_picker_type(props),
+    title = episode_picker_title(props),
+    search_style = "on_demand",
+    footnote = props.loading_message or "Loading episodes...",
+    items = { M.format_menu_item(props.loading_item or "Loading...") },
+  })
+end
+
+function M.update_episode_picker(props)
+  props = props or {}
+  M.update_uosc_menu({
+    type = episode_picker_type(props),
+    title = episode_picker_title(props),
+    search_style = "on_demand",
+    footnote = props.footnote or "Use / to filter",
+    items = build_episode_picker_items(props),
+  })
+end
+
+function M.open_episode_picker_input(props)
+  props = props or {}
+  local items = props.items or {}
+  if #items == 0 then
+    mp.osd_message(props.empty_message or "No episodes found", 3)
+    return false
+  end
+  local labels = {}
+  for i, item in ipairs(items) do
+    local hint = non_empty(item.hint)
+    labels[i] = string.format(
+      "%d. %s%s",
+      i,
+      item.title or ("#" .. tostring(item.id)),
+      hint and ("\t[" .. hint .. "]") or ""
+    )
+  end
+  input.terminate()
+  input.select {
+    prompt = props.prompt or episode_picker_title(props),
+    items = labels,
+    submit = function(idx)
+      if idx < 1 or idx > #items then
+        mp.msg.error "Invalid selection"
+        return
+      end
+      local selected = items[idx]
+      if selected and selected.id ~= nil then
+        mp.commandv("script-message", props.select_message, tostring(selected.id))
+      end
+    end,
+    closed = props.closed or function()
+      mp.set_property("pause", "no")
+    end,
+  }
+  return true
 end
 
 function M.open_anime_search_menu(query)

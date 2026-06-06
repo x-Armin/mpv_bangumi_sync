@@ -224,6 +224,19 @@ function M.get_user_episodes(subject_id)
   )
 end
 
+function M.get_subject_episodes(subject_id)
+  subject_id = tonumber(subject_id)
+  if not subject_id then
+    return {status_code = 400, body = {error = "invalid subject_id"}}
+  end
+  return M.get("/v0/episodes", {
+    subject_id = subject_id,
+    type = 0,
+    offset = 0,
+    limit = 1000,
+  })
+end
+
 -- 获取剧集状态
 function M.get_episode_status(episode_id)
   return M.get(string.format("/v0/users/-/collections/-/episodes/%d", episode_id))
