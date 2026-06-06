@@ -3,6 +3,7 @@ local stream_data = require "src.stream_data"
 local sync_context = require "src.services.sync_context"
 local bangumi_api = require "src.bangumi_api"
 local episode_matcher = require "src.episode_matcher"
+local utils = require "src.utils"
 
 local M = {}
 
@@ -68,6 +69,86 @@ local function fetch_search_subject(item, fetch_detail, search_rank)
   }
 end
 
+local function format_match_failure_reason(title_info, reason)
+  if not reason then
+    return "原因未知"
+  end
+
+  local prefix = string.format(
+    "title=%s season=%s episode=%s",
+    tostring(title_info and title_info.title),
+    tostring(title_info and title_info.season),
+    tostring(title_info and title_info.episode_no)
+  )
+  local code = reason.code
+  if code == "NoCandidates" then
+    return prefix .. " reason=无候选结果"
+  end
+  if code == "SeasonFilteredAll" then
+    return string.format(
+      "%s reason=季度过滤后无候选 parsed_season=%s candidate_count=%s",
+      prefix,
+      tostring(reason.season),
+      tostring(reason.candidate_count)
+    )
+  end
+  if code == "PrimaryExactNotUnique" then
+    return string.format("%s reason=name/name_cn 精确命中不唯一 count=%s", prefix, tostring(reason.count))
+  end
+  if code == "AliasExactNotUnique" then
+    return string.format("%s reason=别名精确命中不唯一 count=%s", prefix, tostring(reason.count))
+  end
+  if code == "NoTitleSimilarity" then
+    return string.format(
+      "%s reason=候选标题与输入无有效相似度 candidate_count=%s parsed_season=%s",
+      prefix,
+      tostring(reason.candidate_count),
+      tostring(reason.season)
+    )
+  end
+  if code == "FuzzyDisabledShortTitle" then
+    return string.format(
+      "%s reason=标题过短不启用模糊匹配 best=%s best_score=%s",
+      prefix,
+      tostring(reason.best),
+      tostring(reason.best_score)
+    )
+  end
+  if code == "FuzzyBelowThreshold" then
+    return string.format(
+      "%s reason=相似度低于阈值 best=%s best_score=%s threshold=%s",
+      prefix,
+      tostring(reason.best),
+      tostring(reason.best_score),
+      tostring(reason.threshold)
+    )
+  end
+  if code == "FuzzyGapTooSmall" then
+    return string.format(
+      "%s reason=最佳候选分差不够 best=%s best_score=%s second=%s second_score=%s gap=%s required_gap=%s",
+      prefix,
+      tostring(reason.best),
+      tostring(reason.best_score),
+      tostring(reason.second),
+      tostring(reason.second_score),
+      tostring(reason.gap),
+      tostring(reason.required_gap)
+    )
+  end
+  if code == "SeasonUniqueNotSatisfied" then
+    return string.format(
+      "%s reason=季度唯一兜底不满足 parsed_season=%s count=%s hit=%s rank=%s rank_limit=%s",
+      prefix,
+      tostring(reason.season),
+      tostring(reason.count),
+      tostring(reason.hit),
+      tostring(reason.rank),
+      tostring(reason.rank_limit)
+    )
+  end
+  return prefix .. " reason=" .. tostring(code)
+end
+
 local function search_bangumi_subject(title_info)
   local query = title_info and title_info.title or nil
   if not query or query == "" then
@@ -89,13 +170,16 @@ local function search_bangumi_subject(title_info)
     end
   end
 
-  local bgm_id, source, score, subject = stream_data.match_subject_candidates(
+  local bgm_id, source, score, subject, reason = stream_data.match_subject_candidates(
     title_info,
     subjects,
     "search"
   )
   if not bgm_id then
-    mp.msg.verbose("stream_context: Bangumi搜索结果未达到自动绑定阈值")
+    mp.msg.verbose(
+      "stream_context: Bangumi搜索结果未达到自动绑定阈值 "
+        .. format_match_failure_reason(title_info, reason)
+    )
     return nil
   end
 
@@ -240,10 +324,30 @@ local function build_context(title_info, bgm_id, bgm_source, subject, opts)
   }
 end
 
+local function fallback_to_dandanplay_file_match(opts, reason)
+  local path = mp.get_property("path")
+  if not path or path == "" then
+    return nil
+  end
+  mp.msg.verbose(
+    "stream_context: fallback to dandanplay file match reason=" .. tostring(reason)
+  )
+  return sync_context.sync_context({
+    force_refresh = opts and opts.force_refresh == true,
+    source = "stream_fallback",
+    remote_url = path,
+    remote_path_key = utils.stable_url_key(path),
+  }).execute()
+end
+
 local function sync_context_execute(opts)
   opts = opts or {}
   local title_info = title_guess.get_current_title_info()
   if not title_info or not title_info.normalized_title then
+    local fallback = fallback_to_dandanplay_file_match(opts, "TitleUnavailable")
+    if fallback and fallback.status ~= "error" then
+      return fallback
+    end
     return {
       status = "error",
       error = "StreamTitleError",
@@ -251,6 +355,10 @@ local function sync_context_execute(opts)
     }
   end
   if not title_info.episode_no then
+    local fallback = fallback_to_dandanplay_file_match(opts, "EpisodeFromStreamTitleFailed")
+    if fallback and fallback.status ~= "error" then
+      return fallback
+    end
     return {
       status = "error",
       error = "EpisodeNumberNotFound",
@@ -269,6 +377,10 @@ local function sync_context_execute(opts)
         title_info = title_info,
       }
     end
+    local fallback = fallback_to_dandanplay_file_match(opts, bgm_source)
+    if fallback and fallback.status ~= "error" then
+      return fallback
+    end
     return {
       status = "select_subject",
       title_info = title_info,
@@ -276,7 +388,14 @@ local function sync_context_execute(opts)
     }
   end
 
-  return build_context(title_info, bgm_id, bgm_source, subject, opts)
+  local result = build_context(title_info, bgm_id, bgm_source, subject, opts)
+  if result and result.status == "error" then
+    local fallback = fallback_to_dandanplay_file_match(opts, result.reason or result.error)
+    if fallback and fallback.status ~= "error" then
+      return fallback
+    end
+  end
+  return result
 end
 
 function M.sync_context(opts)

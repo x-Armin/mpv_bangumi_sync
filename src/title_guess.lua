@@ -8,6 +8,17 @@ local CHINESE_NUM_MAP = {
   ["五"] = 5, ["六"] = 6, ["七"] = 7, ["八"] = 8, ["九"] = 9,
   ["十"] = 10, ["百"] = 100, ["千"] = 1000, ["万"] = 10000,
 }
+local function is_chinese_number_text(value)
+  if not value or value == "" then
+    return false
+  end
+  for uchar in tostring(value):gmatch(UTF8_PATTERN) do
+    if not CHINESE_NUM_MAP[uchar] then
+      return false
+    end
+  end
+  return true
+end
 
 local function chinese_to_number(cn)
   local total = 0
@@ -417,15 +428,22 @@ local function parse_season_hint(text)
     return nil
   end
   local season = text:match("[sS]%s*0*(%d+)[%.%-%s_:]*[eE]")
-    or text:match("第%s*(%d+)%s*[季部]")
+    or text:match("第%s*(%d+)%s*季")
+    or text:match("第%s*(%d+)%s*部")
   if season then
     return parse_number(season)
   end
-  local cn_season = text:match("第([一二三四五六七八九十]+)[季部]")
-  if cn_season then
-    return chinese_to_number(cn_season)
+  for _, word in ipairs({"季", "部"}) do
+    local cn_season = text:match("第(.-)" .. word)
+    if cn_season and is_chinese_number_text(cn_season) then
+      return chinese_to_number(cn_season)
+    end
   end
   return nil
+end
+
+local function has_explicit_season_hint(text)
+  return parse_season_hint(text) ~= nil
 end
 
 local function parse_formatted_title(format_title)
@@ -445,7 +463,7 @@ local function parse_formatted_title(format_title)
   return title_replace(format_title), nil, nil
 end
 
-local function build_title_info(title, season, episode, source, raw_title)
+local function build_title_info(title, season, episode, source, raw_title, opts)
   title = title_replace(title)
   if not title or title == "" then
     return nil
@@ -469,6 +487,7 @@ local function build_title_info(title, season, episode, source, raw_title)
     episode_no = episode_num,
     source = source,
     raw_title = raw_title,
+    season_explicit = opts and opts.season_explicit == true or false,
     alias_key = normalized .. "|" .. season_hint,
   }
 end
@@ -494,14 +513,19 @@ local function parse_text_candidate(raw_title, source, decode)
   local format_title = format_filename(text)
   if format_title then
     local title, season, episode = parse_formatted_title(format_title)
-    return build_title_info(title, season or parse_season_hint(text), episode, source, raw_title)
+    local season_hint = season or parse_season_hint(text)
+    return build_title_info(title, season_hint, episode, source, raw_title, {
+      season_explicit = season ~= nil or has_explicit_season_hint(text),
+    })
   end
 
   local parsed = utils.extract_info_from_filename(text)
   local title = parsed and parsed.title or text
   local season = parse_season_hint(text)
   local episode = parsed and parsed.episode or nil
-  return build_title_info(title, season, episode, source, raw_title)
+  return build_title_info(title, season, episode, source, raw_title, {
+    season_explicit = season ~= nil,
+  })
 end
 
 local function parse_option_title_candidate(raw_title, source)
@@ -518,12 +542,18 @@ local function parse_option_title_candidate(raw_title, source)
     or text:match("^%s*【(.-)】")
     or text:match("^%s*%[(.-)%]")
   if wrapped and wrapped ~= "" then
-    return build_title_info(wrapped, parse_season_hint(text), nil, source, raw_title)
+    local season = parse_season_hint(text)
+    return build_title_info(wrapped, season, nil, source, raw_title, {
+      season_explicit = season ~= nil,
+    })
   end
 
   local title = text:match("^(.-)%s*第%s*%d+%s*[话話集集].*$")
   if title and title ~= "" then
-    return build_title_info(title, parse_season_hint(text), nil, source, raw_title)
+    local season = parse_season_hint(text)
+    return build_title_info(title, season, nil, source, raw_title, {
+      season_explicit = season ~= nil,
+    })
   end
 
   return parse_text_candidate(raw_title, source, true)
@@ -707,7 +737,10 @@ function M.get_current_title_info()
 
   if title_info and not title_info.episode_no and episode_info and episode_info.episode_no then
     local season = title_info.season
-    if (not season or season == 1) and episode_info.season and episode_info.season > 1 then
+    if (not season or season == 1)
+      and episode_info.season_explicit
+      and episode_info.season
+      and episode_info.season > 1 then
       season = episode_info.season
     end
     return build_title_info(

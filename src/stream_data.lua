@@ -87,6 +87,17 @@ local function trim(value)
   return tostring(value):match("^%s*(.-)%s*$")
 end
 
+local function first_non_empty(...)
+  for i = 1, select("#", ...) do
+    local value = select(i, ...)
+    value = value and trim(value) or nil
+    if value and value ~= "" then
+      return value
+    end
+  end
+  return nil
+end
+
 local function append_unique(list, seen, value)
   value = trim(value)
   if not value or value == "" then
@@ -361,6 +372,27 @@ local function candidate_matches_season(candidate, season)
   return subject_matches_season(candidate and candidate.subject, candidate and candidate.titles, season)
 end
 
+local function candidate_display_name(candidate)
+  local subject = candidate and candidate.subject or {}
+  return first_non_empty(
+    subject.name_cn,
+    subject.name,
+    candidate and candidate.titles and candidate.titles[1],
+    candidate and candidate.bgm_id
+  )
+end
+
+local function candidate_summary(candidate)
+  if not candidate then
+    return nil
+  end
+  return string.format(
+    "%s/%s",
+    tostring(candidate.bgm_id),
+    tostring(candidate_display_name(candidate))
+  )
+end
+
 local function filter_candidates_by_season(title_info, candidates)
   local season = title_info and tonumber(title_info.season) or nil
   if not season or season <= 1 then
@@ -439,7 +471,23 @@ local function score_subject_candidate(title_info, candidate)
 end
 
 local function choose_scored_subject(title_info, candidates)
-  candidates = filter_candidates_by_season(title_info, candidates)
+  local source_candidates = candidates or {}
+  local source_count = #source_candidates
+  local season = title_info and tonumber(title_info.season) or nil
+  candidates = filter_candidates_by_season(title_info, source_candidates)
+  local filtered_count = #candidates
+
+  if source_count == 0 then
+    return nil, nil, nil, nil, {code = "NoCandidates"}
+  end
+  if filtered_count == 0 then
+    return nil, nil, nil, nil, {
+      code = "SeasonFilteredAll",
+      season = season,
+      candidate_count = source_count,
+    }
+  end
+
   local exact_hits = {}
   local exact_count = 0
   local exact_hit = nil
@@ -486,38 +534,73 @@ local function choose_scored_subject(title_info, candidates)
     return primary_exact_hit.bgm_id, "exact", primary_exact_hit.score, primary_exact_hit
   end
   if primary_exact_count > 1 then
-    return nil
+    return nil, nil, nil, nil, {
+      code = "PrimaryExactNotUnique",
+      count = primary_exact_count,
+    }
   end
   if alias_exact_count == 1 and alias_exact_hit then
     return alias_exact_hit.bgm_id, "alias_exact", alias_exact_hit.score, alias_exact_hit
   end
   if alias_exact_count > 1 then
-    return nil
+    return nil, nil, nil, nil, {
+      code = "AliasExactNotUnique",
+      count = alias_exact_count,
+    }
   end
 
   if exact_count == 1 and exact_hit then
     return exact_hit.bgm_id, "exact", exact_hit.score, exact_hit
   end
 
-  if best
-    and can_fuzzy_match_any(title_info)
-    and best.score >= FUZZY_THRESHOLD then
-    local second_score = second and second.score or 0
-    if not second or best.bgm_id == second.bgm_id or (best.score - second_score) >= FUZZY_GAP then
-      return best.bgm_id, "fuzzy", best.score, best
-    end
+  if not best then
+    return nil, nil, nil, nil, {
+      code = "NoTitleSimilarity",
+      candidate_count = filtered_count,
+      season = season,
+    }
   end
 
-  return nil
+  if not can_fuzzy_match_any(title_info) then
+    return nil, nil, nil, nil, {
+      code = "FuzzyDisabledShortTitle",
+      best = candidate_summary(best),
+      best_score = best.score,
+    }
+  end
+
+  if best.score < FUZZY_THRESHOLD then
+    return nil, nil, nil, nil, {
+      code = "FuzzyBelowThreshold",
+      best = candidate_summary(best),
+      best_score = best.score,
+      threshold = FUZZY_THRESHOLD,
+    }
+  end
+
+  local second_score = second and second.score or 0
+  if not second or best.bgm_id == second.bgm_id or (best.score - second_score) >= FUZZY_GAP then
+    return best.bgm_id, "fuzzy", best.score, best
+  end
+
+  return nil, nil, nil, nil, {
+    code = "FuzzyGapTooSmall",
+    best = candidate_summary(best),
+    best_score = best.score,
+    second = candidate_summary(second),
+    second_score = second_score,
+    gap = best.score - second_score,
+    required_gap = FUZZY_GAP,
+  }
 end
 
 local function choose_unique_season_search_subject(title_info, candidates)
   local season = title_info and tonumber(title_info.season) or nil
   if not season or season <= 1 then
-    return nil
+    return nil, nil, nil, nil, {code = "SeasonUniqueNotApplicable"}
   end
   if not can_fuzzy_match_any(title_info) then
-    return nil
+    return nil, nil, nil, nil, {code = "SeasonUniqueShortTitle"}
   end
 
   local filtered = filter_candidates_by_season(title_info, candidates)
@@ -539,7 +622,14 @@ local function choose_unique_season_search_subject(title_info, candidates)
     return hit.bgm_id, "season_unique", 1, hit
   end
 
-  return nil
+  return nil, nil, nil, nil, {
+    code = "SeasonUniqueNotSatisfied",
+    season = season,
+    count = count,
+    hit = candidate_summary(hit),
+    rank = hit and hit.search_rank,
+    rank_limit = SEARCH_RANK_SEASON_UNIQUE_LIMIT,
+  }
 end
 
 local function alias_key(title_info)
@@ -679,12 +769,16 @@ function M.match_subject_candidates(title_info, subjects, source_prefix)
     end
   end
 
-  local bgm_id, mode, score, hit = choose_scored_subject(title_info, candidates)
+  local bgm_id, mode, score, hit, reason = choose_scored_subject(title_info, candidates)
   if not bgm_id and source_prefix == "search" then
-    bgm_id, mode, score, hit = choose_unique_season_search_subject(title_info, candidates)
+    local fallback_reason
+    bgm_id, mode, score, hit, fallback_reason = choose_unique_season_search_subject(title_info, candidates)
+    if not bgm_id and fallback_reason and fallback_reason.code == "SeasonUniqueNotSatisfied" then
+      reason = fallback_reason
+    end
   end
   if not bgm_id then
-    return nil
+    return nil, nil, nil, nil, reason
   end
 
   source_prefix = source_prefix or "subject"
