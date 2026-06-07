@@ -124,8 +124,7 @@ function M.get(uri, params)
     warn_api_error(res)
     return {status_code = 500, body = {}}
   end
-  
-  mp.msg.verbose("bangumi_api GET response: " .. dump_for_log(res))
+
   warn_api_error(res)
   res.status_code = res.status_code or 200
   return res
@@ -142,8 +141,7 @@ function M.post(uri, data)
     warn_api_error(res)
     return {status_code = 500, body = {}}
   end
-  
-  mp.msg.verbose("bangumi_api POST response: " .. dump_for_log(res))
+
   warn_api_error(res)
   res.status_code = res.status_code or 200
   return res
@@ -160,8 +158,7 @@ function M.put(uri, data)
     warn_api_error(res)
     return {status_code = 500, body = {}}
   end
-  
-  mp.msg.verbose("bangumi_api PUT response: " .. dump_for_log(res))
+
   warn_api_error(res)
   res.status_code = res.status_code or 200
   return res
@@ -180,7 +177,6 @@ function M.patch(uri, data, opts)
     return {status_code = 500, body = {}}
   end
 
-  mp.msg.verbose("bangumi_api PATCH response: " .. dump_for_log(res))
   warn_api_error(res)
   res.status_code = res.status_code or 200
   return res
@@ -196,7 +192,6 @@ function M.delete(uri)
     return {status_code = 500, body = {}}
   end
 
-  mp.msg.verbose("bangumi_api DELETE response: " .. dump_for_log(res))
   warn_api_error(res)
   res.status_code = res.status_code or 200
   return res
