@@ -13,6 +13,7 @@ function M.request(url, options)
   local params = options.params
   local data = options.data
   local proxy = options.proxy
+  local skip_cert_verify = options.skip_cert_verify == true
   local detach = options.detach == true
 
   -- 构建curl命令
@@ -21,6 +22,10 @@ function M.request(url, options)
   if proxy and proxy ~= "" then
     table.insert(args, "--proxy")
     table.insert(args, proxy)
+  end
+
+  if skip_cert_verify then
+    table.insert(args, "--insecure")
   end
 
   -- 添加headers

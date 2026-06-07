@@ -98,14 +98,27 @@ local function get_proxy()
   return config.config.bgm_proxy
 end
 
+local function get_request_options(extra)
+  local proxy = get_proxy()
+  local opts = {
+    headers = get_headers(),
+    proxy = proxy,
+    skip_cert_verify = proxy
+      and proxy ~= ""
+      and config.config.bgm_proxy_skip_cert_verify == true,
+  }
+  for key, value in pairs(extra or {}) do
+    opts[key] = value
+  end
+  return opts
+end
+
 -- GET请求
 function M.get(uri, params)
   local url = get_api_url() .. uri
-  local res = http.get(url, {
-    headers = get_headers(),
+  local res = http.get(url, get_request_options({
     params = params,
-    proxy = get_proxy(),
-  })
+  }))
   
   if not res then
     warn_api_error(res)
@@ -121,11 +134,9 @@ end
 -- POST请求
 function M.post(uri, data)
   local url = get_api_url() .. uri
-  local res = http.post(url, {
-    headers = get_headers(),
+  local res = http.post(url, get_request_options({
     data = data,
-    proxy = get_proxy(),
-  })
+  }))
   
   if not res then
     warn_api_error(res)
@@ -141,11 +152,9 @@ end
 -- PUT请求
 function M.put(uri, data)
   local url = get_api_url() .. uri
-  local res = http.put(url, {
-    headers = get_headers(),
+  local res = http.put(url, get_request_options({
     data = data,
-    proxy = get_proxy(),
-  })
+  }))
   
   if not res then
     warn_api_error(res)
@@ -161,12 +170,10 @@ end
 -- PATCH请求
 function M.patch(uri, data, opts)
   local url = get_api_url() .. uri
-  local res = http.patch(url, {
-    headers = get_headers(),
+  local res = http.patch(url, get_request_options({
     data = data,
-    proxy = get_proxy(),
     detach = opts and opts.detach or false,
-  })
+  }))
 
   if not res then
     warn_api_error(res)
@@ -182,9 +189,7 @@ end
 -- DELETE请求
 function M.delete(uri)
   local url = get_api_url() .. uri
-  local res = http.delete(url, {
-    headers = get_headers(),
-  })
+  local res = http.delete(url, get_request_options())
 
   if not res then
     warn_api_error(res)
