@@ -12,6 +12,9 @@ Options = {
   -- Bangumi API代理，留空表示不使用代理
   bgm_proxy = "",
 
+  -- Skip TLS certificate verification when Bangumi API proxy is configured.
+  bgm_proxy_skip_cert_verify = false,
+
   -- Comma separated hosts that should be treated as network files.
   network_file_hosts = "",
 
@@ -175,6 +178,10 @@ local function apply_options()
   Options.bgm_access_token = normalize_string(Options.bgm_access_token, "")
   Options.bangumi_api = normalize_bangumi_api(Options.bangumi_api)
   Options.bgm_proxy = normalize_string(Options.bgm_proxy, "")
+  Options.bgm_proxy_skip_cert_verify = normalize_boolean(
+    Options.bgm_proxy_skip_cert_verify,
+    false
+  )
   Options.network_file_hosts = normalize_string(Options.network_file_hosts, "")
   Options.storage1 = normalize_string(Options.storage1, "")
   Options.storage2 = normalize_string(Options.storage2, "")
@@ -208,6 +215,7 @@ local function apply_options()
   public_config.access_token = Options.bgm_access_token
   public_config.bangumi_api = Options.bangumi_api
   public_config.bgm_proxy = Options.bgm_proxy
+  public_config.bgm_proxy_skip_cert_verify = Options.bgm_proxy_skip_cert_verify
   public_config.network_file_hosts = Options.network_file_hosts_list
   public_config.storages = Options.all_storages_list
   public_config.storage1 = Options.storage1_list

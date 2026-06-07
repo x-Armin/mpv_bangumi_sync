@@ -324,30 +324,10 @@ local function build_context(title_info, bgm_id, bgm_source, subject, opts)
   }
 end
 
-local function fallback_to_dandanplay_file_match(opts, reason)
-  local path = mp.get_property("path")
-  if not path or path == "" then
-    return nil
-  end
-  mp.msg.verbose(
-    "stream_context: fallback to dandanplay file match reason=" .. tostring(reason)
-  )
-  return sync_context.sync_context({
-    force_refresh = opts and opts.force_refresh == true,
-    source = "stream_fallback",
-    remote_url = path,
-    remote_path_key = utils.stable_url_key(path),
-  }).execute()
-end
-
 local function sync_context_execute(opts)
   opts = opts or {}
   local title_info = title_guess.get_current_title_info()
   if not title_info or not title_info.normalized_title then
-    local fallback = fallback_to_dandanplay_file_match(opts, "TitleUnavailable")
-    if fallback and fallback.status ~= "error" then
-      return fallback
-    end
     return {
       status = "error",
       error = "StreamTitleError",
@@ -355,10 +335,6 @@ local function sync_context_execute(opts)
     }
   end
   if not title_info.episode_no then
-    local fallback = fallback_to_dandanplay_file_match(opts, "EpisodeFromStreamTitleFailed")
-    if fallback and fallback.status ~= "error" then
-      return fallback
-    end
     return {
       status = "error",
       error = "EpisodeNumberNotFound",
@@ -377,10 +353,6 @@ local function sync_context_execute(opts)
         title_info = title_info,
       }
     end
-    local fallback = fallback_to_dandanplay_file_match(opts, bgm_source)
-    if fallback and fallback.status ~= "error" then
-      return fallback
-    end
     return {
       status = "select_subject",
       title_info = title_info,
@@ -389,12 +361,6 @@ local function sync_context_execute(opts)
   end
 
   local result = build_context(title_info, bgm_id, bgm_source, subject, opts)
-  if result and result.status == "error" then
-    local fallback = fallback_to_dandanplay_file_match(opts, result.reason or result.error)
-    if fallback and fallback.status ~= "error" then
-      return fallback
-    end
-  end
   return result
 end
 
