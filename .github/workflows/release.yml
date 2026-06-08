@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. v1.1.1"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark as pre-release"
+        required: false
+        default: false
+        type: boolean
+      draft:
+        description: "Create as draft"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          if ! echo "$VERSION" | grep -Eq '^v[0-9]+(\.[0-9]+){1,2}(-[A-Za-z0-9._-]+)?$'; then
+            echo "Invalid version: $VERSION"
+            echo "Expected examples: v1.1.1, v1.1.1-beta.1"
+            exit 1
+          fi
+
+      - name: Build package
+        run: |
+          PKG="mpv_bangumi_sync"
+          mkdir -p "dist/${PKG}"
+          cp -r main.lua src README.md LICENSE mpv_bangumi_sync.conf "dist/${PKG}/"
+          cd dist
+          zip -r "${PKG}.zip" "${PKG}"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ inputs.prerelease }}
+          DRAFT: ${{ inputs.draft }}
+        run: |
+          FLAGS="--generate-notes"
+
+          if [ "$PRERELEASE" = "true" ]; then
+            FLAGS="$FLAGS --prerelease"
+          fi
+
+          if [ "$DRAFT" = "true" ]; then
+            FLAGS="$FLAGS --draft"
+          fi
+
+          gh release create "$VERSION" \
+            "dist/mpv_bangumi_sync.zip" \
+            --target "$GITHUB_SHA" \
+            --title "$VERSION" \
+            $FLAGS
