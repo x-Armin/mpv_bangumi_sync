@@ -170,7 +170,7 @@ local formatters = {
     end
   },
   {
-    regex = "^(.-)%s*[%[%(]([OVADSPs]+)[%]%)",
+    regex = "^(.-)%s*[%[%(]([OVADSPs]+)[%]%)]",
     format = function(name, sp)
       return clean_name(name) .. " [" .. sp .. "]"
     end
