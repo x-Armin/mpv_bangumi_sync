@@ -40,6 +40,7 @@ local compose_sync_message
 local update_episode_status_from_cache
 local reconcile_update_timer
 local mark_current_episode_status
+local PersistedPendingRetried = false
 
 local function prune_db_on_start()
   local removed = db.prune({max_age_days = 30, remove_missing = false})
@@ -49,6 +50,23 @@ local function prune_db_on_start()
 end
 
 prune_db_on_start()
+
+local function retry_persisted_pending_syncs()
+  if PersistedPendingRetried then
+    return
+  end
+  PersistedPendingRetried = true
+  local results = bangumi_service.retry_persisted_pending()
+  if results and #results > 0 then
+    local count = 0
+    for _, result in ipairs(results) do
+      count = count + (tonumber(result.count) or 0)
+    end
+    mp.msg.info(string.format("Retry persisted pending syncs succeeded: %d episodes", count))
+  end
+end
+
+retry_persisted_pending_syncs()
 
 mp.register_script_message("uosc-version", function()
   UoscAvailable = true

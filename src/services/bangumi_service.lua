@@ -6,6 +6,7 @@ local sync_context = require "src.services.sync_context"
 local config = require "src.config"
 local episode_matcher = require "src.episode_matcher"
 local storage_gate = require "src.core.storage_gate"
+local pending_queue = require "src.core.pending_queue"
 
 local M = {}
 
@@ -130,7 +131,32 @@ function M.flush_pending(opts)
       end
     end
   end
+  if not opts.detach then
+    pending_queue.save(pending_episode_ids)
+  end
   return results
+end
+
+function M.retry_persisted_pending()
+  local entries = pending_queue.load()
+  if not entries or #entries == 0 then
+    return {}
+  end
+
+  for _, entry in ipairs(entries) do
+    local storage_key = entry.storage_key
+    local subject_id = entry.subject_id
+    local episode_ids = entry.episode_ids
+    if storage_key and subject_id and episode_ids then
+      local set = get_pending_subject_set(storage_key, subject_id)
+      for _, episode_id in ipairs(episode_ids) do
+        set[episode_id] = true
+      end
+    end
+  end
+
+  mp.msg.info("Retrying persisted pending syncs: " .. tostring(#entries) .. " entries")
+  return M.flush_pending({force = true})
 end
 
 local function get_current_file_path()
