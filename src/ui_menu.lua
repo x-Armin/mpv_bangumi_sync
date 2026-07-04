@@ -235,6 +235,7 @@ end
 local function build_plain_info_text(state)
   local current_episode_info = state.CurrentEpisodeInfo or {}
   local title = non_empty(current_episode_info.animeTitle) or "未获取"
+  local episode_title = non_empty(current_episode_info.episodeTitle)
   local episode_ep = tonumber(current_episode_info.episodeEp)
   if not episode_ep or episode_ep <= 0 then
     local episode_id = tonumber(current_episode_info.episodeId)
@@ -242,11 +243,18 @@ local function build_plain_info_text(state)
   end
   local status = non_empty(state.EpisodeStatusText) or "未获取"
   local progress = non_empty(state.EpisodeProgressText) or "未获取"
+  local episode_text = string.format(
+    "%s 第 %s 话",
+    title,
+    tostring((episode_ep and episode_ep > 0) and episode_ep or "?")
+  )
+  if episode_title then
+    episode_text = episode_text .. " " .. episode_title
+  end
 
   return string.format(
-    "%s 第 %s 话\n状态: %s\n进度: %s",
-    title,
-    tostring((episode_ep and episode_ep > 0) and episode_ep or "?"),
+    "%s\n状态: %s\n进度: %s",
+    episode_text,
     status,
     progress
   )
