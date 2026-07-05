@@ -110,6 +110,17 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
   if not bgm_id then
     return nil
   end
+  local function with_collection_status(episodes)
+    if not episodes then
+      return nil
+    end
+    local collection = bangumi_api.get_user_collection(bgm_id)
+    if collection and tonumber(collection.status_code or 0) == 200 and collection.body then
+      episodes.collection = collection.body
+    end
+    return episodes
+  end
+
   local force_refresh = opts and opts.force_refresh
   local episodes_path = db.get_path(episode_id, "episodes")
   if not force_refresh then
@@ -128,7 +139,7 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
           episodes_path
         )
       )
-      return cached
+      return with_collection_status(cached)
     end
   end
 
@@ -145,7 +156,7 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
     return nil
   end
   json_store.write(episodes_path, episodes.body, {atomic = true})
-  return episodes.body
+  return with_collection_status(episodes.body)
 end
 
 -- 构造episode match

@@ -16,6 +16,21 @@ function M.map_status(status)
   return status_map[status] or "未知"
 end
 
+local function collection_is_watched(collection)
+  if not collection then
+    return false
+  end
+  local status = collection.type
+  if type(collection.status) == "table" then
+    status = collection.status.id or collection.status.name or status
+  end
+  if tonumber(status) == 2 then
+    return true
+  end
+  status = tostring(status or ""):lower()
+  return status == "collect" or status == "watched" or status == "看过"
+end
+
 function M.compute(current_episode_info, episodes_data)
   if not current_episode_info or not current_episode_info.episodeId then
     return nil
@@ -102,6 +117,10 @@ function M.compute(current_episode_info, episodes_data)
   end
 
   local status = target and target.type or nil
+  if target and collection_is_watched(episodes_data.collection) then
+    status = 2
+    watched = total
+  end
   local updated_info = current_episode_info
 
   if target and target.episode then

@@ -4,6 +4,10 @@ local title_guess = require "src.title_guess"
 
 local M = {}
 
+local PLAIN_INFO_DURATION = 5
+local PlainInfoVisible = false
+local PlainInfoTimer = nil
+
 local function non_empty(value)
   if value == nil then
     return nil
@@ -228,9 +232,60 @@ local function build_info_menu_props(state)
   }
 end
 
+local function build_plain_info_text(state)
+  local current_episode_info = state.CurrentEpisodeInfo or {}
+  local title = non_empty(current_episode_info.animeTitle) or "未获取"
+  local episode_title = non_empty(current_episode_info.episodeTitle)
+  local episode_ep = tonumber(current_episode_info.episodeEp)
+  if not episode_ep or episode_ep <= 0 then
+    local episode_id = tonumber(current_episode_info.episodeId)
+    episode_ep = episode_id and episode_id % 10000 or nil
+  end
+  local status = non_empty(state.EpisodeStatusText) or "未获取"
+  local progress = non_empty(state.EpisodeProgressText) or "未获取"
+  local episode_text = string.format(
+    "%s 第 %s 话",
+    title,
+    tostring((episode_ep and episode_ep > 0) and episode_ep or "?")
+  )
+  if episode_title then
+    episode_text = episode_text .. " " .. episode_title
+  end
+
+  return string.format(
+    "%s\n状态: %s\n进度: %s",
+    episode_text,
+    status,
+    progress
+  )
+end
+
+local function close_plain_info_text()
+  if PlainInfoTimer then
+    PlainInfoTimer:kill()
+    PlainInfoTimer = nil
+  end
+  PlainInfoVisible = false
+  mp.osd_message("", 0)
+end
+
+local function toggle_plain_info_text(state)
+  if PlainInfoVisible then
+    close_plain_info_text()
+    return
+  end
+
+  PlainInfoVisible = true
+  mp.osd_message(build_plain_info_text(state), PLAIN_INFO_DURATION)
+  PlainInfoTimer = mp.add_timeout(PLAIN_INFO_DURATION, function()
+    PlainInfoVisible = false
+    PlainInfoTimer = nil
+  end)
+end
+
 function M.open_info_menu(state)
   if not state.UoscAvailable then
-    mp.osd_message("未安装uosc，无法显示番剧信息窗口", 3)
+    toggle_plain_info_text(state)
     return
   end
   M.open_uosc_menu(build_info_menu_props(state))
