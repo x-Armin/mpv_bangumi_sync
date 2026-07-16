@@ -200,12 +200,15 @@ local function build_info_menu_props(state)
         { name = "refresh", icon = "refresh", label = "根据当前匹配的番剧Id，重新获取单集信息" },
       },
       actions_place = "inside" },
-    -- {
-    --   title = "自动点格子",
-    --   icon = AutoMarkIcon,
-    --   value = { "script-message-to", mp.get_script_name(), "bgm-toggle-auto-mark" },
-    --   selectable = true,
-    --   keep_open = true },
+    {
+      title = "自动点格子：" .. AutoMarkText,
+      value = { "script-message-to", mp.get_script_name(), "bgm-toggle-auto-mark" },
+      selectable = true,
+      keep_open = true,
+      actions = {
+        { name = "toggle_auto_mark", icon = AutoMarkIcon, label = "切换自动点格子" },
+      },
+      actions_place = "inside" },
     {
       title = "打开Bangumi",
       value = { "script-message", "open-bangumi-url" },

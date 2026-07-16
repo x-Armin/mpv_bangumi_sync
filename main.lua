@@ -83,7 +83,10 @@ local function reset_globals()
   MatchResults = nil
 end
 
-local function resolve_auto_mark_enabled()
+local function resolve_auto_mark_enabled(value)
+  if value ~= nil then
+    return value == true
+  end
   return Options.enable_auto_mark ~= false
 end
 
@@ -489,7 +492,15 @@ local function bind_manual_bgm_and_reload(bgm_id)
 end
 
 flush_pending_updates = function(reason, opts)
-  local results = bangumi_service.flush_pending(opts)
+  local flush_opts = {}
+  for key, value in pairs(opts or {}) do
+    flush_opts[key] = value
+  end
+  if flush_opts.auto_mark_enabled == nil then
+    flush_opts.auto_mark_enabled = AutoMarkEnabled
+  end
+
+  local results = bangumi_service.flush_pending(flush_opts)
   if results and #results > 0 then
     local count = 0
     for _, result in ipairs(results) do
@@ -596,6 +607,7 @@ mark_current_episode_status = function(opts)
     status = status,
     storage = context.storage,
     batch = opts.batch == true,
+    auto_mark_enabled = AutoMarkEnabled,
   }).execute()
   if not result then
     local message = is_manual and "更新剧集状态失败" or "同步Bangumi追番进度失败"
@@ -647,7 +659,7 @@ end
 local function apply_auto_mark_mode(opts)
   opts = opts or {}
   local previous = AutoMarkEnabled
-  AutoMarkEnabled = resolve_auto_mark_enabled()
+  AutoMarkEnabled = resolve_auto_mark_enabled(opts.enabled)
   update_auto_mark_text()
 
   if opts.force_log or previous == nil or previous ~= AutoMarkEnabled then
@@ -667,8 +679,7 @@ local function apply_auto_mark_mode(opts)
 end
 
 local function toggle_auto_mark_from_panel()
-  Options.enable_auto_mark = not AutoMarkEnabled
-  apply_auto_mark_mode({force_log = true})
+  apply_auto_mark_mode({enabled = not AutoMarkEnabled, force_log = true})
   mp.osd_message("自动点格子：" .. AutoMarkText, 2)
 end
 
@@ -690,6 +701,7 @@ apply_auto_mark_mode({force_log = true})
 
 mp.register_event("file-loaded", function()
   NetworkModeOverride = nil
+  apply_auto_mark_mode()
   local path = mp.get_property "path"
   local network_mode = resolve_network_mode(path)
   if network_mode then
@@ -809,6 +821,10 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
   if event.action == "toggle_network_mode" then
     mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
     toggle_network_mode_from_panel()
+    return
+  end
+  if event.action == "toggle_auto_mark" then
+    toggle_auto_mark_from_panel()
     return
   end
   if event.action then
