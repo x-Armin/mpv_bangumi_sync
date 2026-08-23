@@ -176,9 +176,7 @@ network_file_hosts=example.com,192.168.1.10
 自动匹配失败或结果不准确时，可以从番剧信息窗口进入手动匹配。
 
 - 弹弹play 搜索：按弹弹play番剧和剧集重新选择
-- Bangumi 搜索：直接选择 Bangumi 条目，并绑定当前目录
-
-通过 Bangumi 搜索绑定目录后，同一目录下的后续剧集会优先使用该 Bangumi 条目。
+- Bangumi 搜索：直接选择 Bangumi 条目
 
 ## 数据目录
 
@@ -188,7 +186,7 @@ network_file_hosts=example.com,192.168.1.10
 portable_config/script-data/mpv_bangumi_sync/
 ```
 
-该目录用于保存弹弹play id、Bangumi 条目、剧集信息和手动绑定结果。通常不需要手动修改。
+该目录用于保存弹弹play id、Bangumi 条目、剧集信息和手动绑定结果。匹配缓存按“清洗标题 + 季数”区分，通常不需要手动修改。
 
 ## 注意
 
