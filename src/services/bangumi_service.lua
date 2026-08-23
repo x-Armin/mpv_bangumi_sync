@@ -11,9 +11,13 @@ local M = {}
 
 local pending_episode_ids = {}
 
-local function is_auto_mark_enabled()
-  local opts = config and config.options or {}
-  return opts.enable_auto_mark ~= false
+local function is_auto_mark_enabled(opts)
+  opts = opts or {}
+  if opts.auto_mark_enabled ~= nil then
+    return opts.auto_mark_enabled == true
+  end
+  local config_opts = config and config.options or {}
+  return config_opts.enable_auto_mark ~= false
 end
 
 local function normalize_batch_threshold(value, default_value)
@@ -68,7 +72,7 @@ local function count_pending(set)
   return count
 end
 
-local function queue_pending_episode(storage_config, subject_id, episode_id)
+local function queue_pending_episode(storage_config, subject_id, episode_id, opts)
   if not subject_id or not episode_id then
     return {queued = false, queued_count = 0, threshold = 0}
   end
@@ -78,7 +82,11 @@ local function queue_pending_episode(storage_config, subject_id, episode_id)
   set[episode_id] = true
   local count = count_pending(set)
   if threshold > 0 and count >= threshold then
-    local results = M.flush_pending({storage_key = storage_key, subject_id = subject_id})
+    local results = M.flush_pending({
+      storage_key = storage_key,
+      subject_id = subject_id,
+      auto_mark_enabled = opts and opts.auto_mark_enabled,
+    })
     local flushed = results and #results > 0
     return {
       queued = true,
@@ -99,7 +107,7 @@ end
 
 function M.flush_pending(opts)
   opts = opts or {}
-  if not is_auto_mark_enabled() and opts.force ~= true then
+  if not is_auto_mark_enabled(opts) and opts.force ~= true then
     return {}
   end
 
@@ -342,7 +350,7 @@ end
 -- 更新剧集状态
 function M.update_episode(opts)
   opts = opts or {}
-  if not is_auto_mark_enabled() then
+  if not is_auto_mark_enabled(opts) then
     return {
       execute = function()
         return {disabled = true, skipped = true}
@@ -510,7 +518,7 @@ function M.update_episode(opts)
   do
     local changed = mark_episode_watched(episode)
     persist_episodes_if_needed(changed)
-    local queue_result = queue_pending_episode(storage_config, info.bgm_id, bgm_episode_id)
+    local queue_result = queue_pending_episode(storage_config, info.bgm_id, bgm_episode_id, opts)
     return {
       execute = function()
         return {
@@ -550,7 +558,7 @@ M.update_episode = function(opts)
   opts = opts or {}
   local batch = opts.batch == true
   local status = tonumber(opts.status) or 2
-  if batch and not is_auto_mark_enabled() then
+  if batch and not is_auto_mark_enabled(opts) then
     return {
       execute = function()
         return {disabled = true, skipped = true}
@@ -594,7 +602,7 @@ M.update_episode = function(opts)
 
   local queue_result = nil
   if batch and status == 2 then
-    queue_result = queue_pending_episode(storage_config, subject_id, episode_id)
+    queue_result = queue_pending_episode(storage_config, subject_id, episode_id, opts)
   else
     local update_res = bangumi_api.update_episode_status(episode_id, status)
     if not update_res or tonumber(update_res.status_code or 0) >= 400 then
