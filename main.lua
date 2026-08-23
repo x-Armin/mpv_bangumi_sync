@@ -190,6 +190,10 @@ local function get_current_db_path()
   return mp.command_native({"normalize-path", file_path})
 end
 
+local function get_current_cache_key()
+  return db.make_cache_key(title_guess.get_current_title_info())
+end
+
 local function is_current_stream()
   local path = mp.get_property("path")
   return utils.is_protocol(path)
@@ -477,7 +481,7 @@ local function bind_manual_bgm_and_reload(bgm_id)
     return false, "PathUnavailable"
   end
 
-  local ok = db.set_manual_bgm_id(file_path, bgm_id)
+  local ok = db.set_manual_bgm_id(file_path, bgm_id, get_current_cache_key())
   if not ok then
     return false, "SaveFailed"
   end
@@ -777,7 +781,7 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
       mp.osd_message("无法获取当前文件路径", 2)
       return
     end
-    local db_record = db.get({ path = file_path })
+    local db_record = db.get({ path = file_path, cache_key = get_current_cache_key() })
     local bgm_id = (AnimeInfo and AnimeInfo.bgm_id) or (db_record and db_record.bgm_id)
     if not bgm_id then
       mp.osd_message("缺少缓存条目信息，无法刷新", 2)

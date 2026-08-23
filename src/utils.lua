@@ -132,6 +132,21 @@ function M.stable_url_key(value)
   return M.url_decode(key)
 end
 
+-- 统一用于 Bangumi 搜索精确匹配和本地缓存键的标题清洗。
+function M.normalize_search_title(title)
+  if not title then
+    return nil
+  end
+  local normalized = tostring(title):match("^%s*(.-)%s*$")
+  if not normalized or normalized == "" then
+    return nil
+  end
+  normalized = normalized:lower()
+  normalized = normalized:gsub("[%s%p_%-]+", "")
+  normalized = normalized:gsub("　", "")
+  return normalized ~= "" and normalized or nil
+end
+
 -- 简单的JSON格式化（用于HTTP请求）
 function M.format_json(data)
   local mp_utils = require "mp.utils"

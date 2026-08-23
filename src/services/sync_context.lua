@@ -293,8 +293,8 @@ local function can_use_autoload_source(video_source, sync_state, episode_id)
   if not episode_id then
     return false
   end
-  local folder_info = sync_state and sync_state.folder_info or nil
-  if folder_entry_matches_current(folder_info and folder_info.entries, video_source.filename) then
+  local cache_info = sync_state and sync_state.cache_info or nil
+  if folder_entry_matches_current(cache_info and cache_info.entries, video_source.filename) then
     return true
   end
 
@@ -369,20 +369,6 @@ local function get_subject_cached(bgm_id, episode_id, opts)
   return res.body
 end
 
-local function normalize_search_title(title)
-  if not title then
-    return nil
-  end
-  local normalized = tostring(title):match("^%s*(.-)%s*$")
-  if not normalized or normalized == "" then
-    return nil
-  end
-  normalized = normalized:lower()
-  normalized = normalized:gsub("[%s%p_%-]+", "")
-  normalized = normalized:gsub("　", "")
-  return normalized ~= "" and normalized or nil
-end
-
 local function append_unique_title(list, seen, value)
   value = value and tostring(value):match("^%s*(.-)%s*$") or nil
   if not value or value == "" or seen[value] then
@@ -429,7 +415,7 @@ local function bangumi_id_from_search_process(anime_info)
 
   local normalized_queries = {}
   for _, query in ipairs(queries) do
-    local normalized = normalize_search_title(query)
+    local normalized = utils.normalize_search_title(query)
     if normalized then
       normalized_queries[normalized] = true
     end
@@ -448,7 +434,7 @@ local function bangumi_id_from_search_process(anime_info)
         local score = 0
 
         for _, candidate_name in ipairs(names) do
-          local normalized_name = normalize_search_title(candidate_name)
+          local normalized_name = utils.normalize_search_title(candidate_name)
           if normalized_name and normalized_queries[normalized_name] then
             exact = true
           end
@@ -598,21 +584,28 @@ local function video_source_process(sync_opts)
     dir_path, filename = split_file_path(file_path)
   end
 
+  local title_info = title_guess.get_current_title_info()
+  local cache_key = db.make_cache_key(title_info)
+  if not cache_key then
+    mp.msg.verbose("sync_context: 无法生成标题季度缓存键，跳过本地匹配缓存")
+  end
+
   return {
     status = "ok",
     file_path = file_path,
     dir_path = dir_path,
     filename = filename,
+    cache_key = cache_key,
     storage_config = storage_config,
     remote_video_info = remote_video_info,
     is_remote_file = is_remote_file,
   }
 end
 
--- 从 DB 读取当前文件已保存的同步状态，包括文件记录、目录记录和手动 Bangumi 绑定。
--- 返回 sync_state 表，包含 db_record、folder_info、manual_bgm_id 和 episode_id。
+-- 从 DB 读取当前文件已保存的同步状态，包括文件记录、标题季度记录和手动 Bangumi 绑定。
+-- 返回 sync_state 表，包含 db_record、cache_info、manual_bgm_id 和 episode_id。
 local function load_sync_state_from_db(sync_opts, video_source)
-  local db_record = db.get({path = video_source.file_path})
+  local db_record = db.get({path = video_source.file_path, cache_key = video_source.cache_key})
   mp.msg.verbose(
     string.format(
       "sync_context: db 记录 dandanplay_id=%s bgm_id=%s",
@@ -621,15 +614,15 @@ local function load_sync_state_from_db(sync_opts, video_source)
     )
   )
 
-  local folder_info = video_source.dir_path ~= "" and db.get_folder_info(video_source.dir_path) or nil
+  local cache_info = db.get_cache_info(video_source.cache_key)
   local manual_bgm_id = sync_opts.force_manual_bgm_id
-  if not manual_bgm_id and folder_info and folder_info.manual and folder_info.bgm_id then
-    manual_bgm_id = tonumber(folder_info.bgm_id)
+  if not manual_bgm_id and cache_info and cache_info.manual and cache_info.bgm_id then
+    manual_bgm_id = tonumber(cache_info.bgm_id)
   end
 
   return {
     db_record = db_record,
-    folder_info = folder_info,
+    cache_info = cache_info,
     manual_bgm_id = manual_bgm_id,
     episode_id = sync_opts.force_episode_id or (db_record and db_record.dandanplay_id),
   }
@@ -744,7 +737,7 @@ local function manual_bangumi_context_process(sync_opts, video_source, sync_stat
     bangumiUrl = "https://bgm.tv/subject/" .. tostring(manual_bgm_id),
   }
 
-  db.set_bgm_id(video_source.file_path, manual_bgm_id)
+  db.set_bgm_id(video_source.file_path, manual_bgm_id, video_source.cache_key)
   db.set_episode_info(runtime_episode_id, episode_info)
   return sync_context_build(
     video_source,
@@ -766,13 +759,13 @@ local function dandanplay_context_process(sync_opts, video_source, sync_state)
 
   if sync_opts.force_episode_id then
     mp.msg.verbose("sync_context: 强制 episode_id=" .. tostring(sync_opts.force_episode_id))
-    db.set_dandanplay_id(video_source.file_path, sync_opts.force_episode_id)
+    db.set_dandanplay_id(video_source.file_path, sync_opts.force_episode_id, video_source.cache_key)
     episode_source = "force"
   end
 
   if not episode_id and not sync_state.skip_autoload then
     local autoload_id = (not video_source.is_remote_file)
-      and db.get_autoload_source(video_source.dir_path, video_source.filename)
+      and db.get_autoload_source(video_source.cache_key, video_source.filename)
       or nil
     if autoload_id then
       if can_use_autoload_source(video_source, sync_state, autoload_id) then
@@ -799,18 +792,18 @@ local function dandanplay_context_process(sync_opts, video_source, sync_state)
     local matches = get_match_info(video_source.file_path, video_source.remote_video_info)
     mp.msg.verbose("sync_context: 匹配候选数=" .. tostring(#matches))
     if #matches > 1 then
-      local folder_info = sync_state.folder_info
-      if (not video_source.is_remote_file) and folder_info and folder_info.manual and folder_info.anime_id then
+      local cache_info = sync_state.cache_info
+      if (not video_source.is_remote_file) and cache_info and cache_info.manual and cache_info.anime_id then
         for _, match in ipairs(matches) do
           local match_anime_id = math.floor(match.episodeId / 10000)
-          if match_anime_id == folder_info.anime_id then
+          if match_anime_id == cache_info.anime_id then
             mp.msg.verbose(
-              "sync_context: 通过手动 anime_id 自动选择匹配=" .. tostring(folder_info.anime_id)
+              "sync_context: 通过手动 anime_id 自动选择匹配=" .. tostring(cache_info.anime_id)
             )
             episode_info = match
             episode_id = match.episodeId
             episode_source = "match"
-            db.set_dandanplay_id(video_source.file_path, episode_id)
+            db.set_dandanplay_id(video_source.file_path, episode_id, video_source.cache_key)
             db.set_episode_info(episode_id, episode_info)
             break
           end
@@ -837,7 +830,7 @@ local function dandanplay_context_process(sync_opts, video_source, sync_state)
         mp.msg.verbose("sync_context: 选中匹配 episode_id=" .. tostring(episode_info.episodeId))
         episode_id = episode_info.episodeId
         episode_source = "match"
-        db.set_dandanplay_id(video_source.file_path, episode_id)
+        db.set_dandanplay_id(video_source.file_path, episode_id, video_source.cache_key)
         db.set_episode_info(episode_id, episode_info)
       end
     end
@@ -851,7 +844,7 @@ local function dandanplay_context_process(sync_opts, video_source, sync_state)
 
   if sync_opts.source == "manual" then
     local anime_id = math.floor(episode_id / 10000)
-    db.set_manual_selection(video_source.file_path, anime_id)
+    db.set_manual_selection(video_source.file_path, anime_id, video_source.cache_key)
     mp.msg.verbose("sync_context: 已保存手动 anime_id=" .. tostring(anime_id))
   end
 
@@ -883,7 +876,7 @@ local function episode_info_ensure_or_rebuild(sync_opts, video_source, episode_i
     return {status = "error", error = "EpisodeInfoError", episode_id = episode_id}
   end
 
-  db.set_dandanplay_id(video_source.file_path, episode_id)
+  db.set_dandanplay_id(video_source.file_path, episode_id, video_source.cache_key)
   return {
     status = "ok",
     episode_info = episode_info,
@@ -935,7 +928,7 @@ local function bangumi_context_process(sync_opts, video_source, episode_id, anim
     }
   end
 
-  db.set_bgm_id(video_source.file_path, bgm_id)
+  db.set_bgm_id(video_source.file_path, bgm_id, video_source.cache_key)
   local episodes = nil
   if sync_opts.ensure_episodes then
     episodes = get_user_episodes_cached(episode_id, bgm_id, {force_refresh = sync_opts.refresh})

@@ -6,6 +6,7 @@ local sync_context = require "src.services.sync_context"
 local config = require "src.config"
 local episode_matcher = require "src.episode_matcher"
 local storage_gate = require "src.core.storage_gate"
+local title_guess = require "src.title_guess"
 
 local M = {}
 
@@ -150,6 +151,10 @@ local function get_current_file_path()
     return utils.stable_url_key(file_path)
   end
   return mp.command_native({"normalize-path", file_path})
+end
+
+local function get_current_cache_key()
+  return db.make_cache_key(title_guess.get_current_title_info())
 end
 
 local function extract_episode_no_from_filename(file_path)
@@ -317,7 +322,7 @@ function M.fetch_episodes(opts, anime_info)
     return utils.subprocess_err()
   end
   local file_path = get_current_file_path()
-  local db_record = file_path and db.get({path = file_path}) or nil
+  local db_record = file_path and db.get({path = file_path, cache_key = get_current_cache_key()}) or nil
   local runtime_episode_id = resolve_runtime_episode_id(file_path, info.bgm_id, db_record)
 
   if not runtime_episode_id then
@@ -379,7 +384,7 @@ function M.update_episode(opts)
   end
   
   local file_path = get_current_file_path()
-  local db_record = db.get({path = file_path})
+  local db_record = db.get({path = file_path, cache_key = get_current_cache_key()})
   local manual_bgm_mode = db_record
     and db_record.manual == true
     and tonumber(db_record.bgm_id)
