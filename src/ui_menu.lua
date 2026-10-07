@@ -1,12 +1,20 @@
 local utils = require "src.utils"
 local mp_utils = require "mp.utils"
 local title_guess = require "src.title_guess"
+local episode_status = require "src.services.episode_status"
 
 local M = {}
 
 local PLAIN_INFO_DURATION = 5
 local PlainInfoVisible = false
 local PlainInfoTimer = nil
+local EpisodeListMenu = nil
+local EpisodeListRequest = nil
+
+function M.clear_episode_list()
+  EpisodeListMenu = nil
+  EpisodeListRequest = nil
+end
 
 local function non_empty(value)
   if value == nil then
@@ -27,9 +35,13 @@ function M.format_menu_item(message)
   }
 end
 
-function M.open_uosc_menu(props)
+function M.open_uosc_menu(props, submenu_id)
   local json_props = utils.format_json(props)
-  mp.commandv("script-message-to", "uosc", "open-menu", json_props)
+  if submenu_id then
+    mp.commandv("script-message-to", "uosc", "open-menu", json_props, submenu_id)
+  else
+    mp.commandv("script-message-to", "uosc", "open-menu", json_props)
+  end
 end
 
 function M.update_uosc_menu(props)
@@ -146,8 +158,8 @@ end
 
 local function build_info_menu_props(state)
   local CurrentEpisodeInfo = state.CurrentEpisodeInfo
-  local EpisodeStatusText = state.EpisodeStatusText
-  local EpisodeProgressText = state.EpisodeProgressText
+  local EpisodeStatusText = state.EpisodeStatusText or "未获取"
+  local EpisodeProgressText = state.EpisodeProgressText or "未获取"
   local IsNetworkPath = state.IsNetworkPath == true
   local NetworkModeText = state.NetworkModeText or ""
   local NetworkModeIcon = "sync_alt"
@@ -189,7 +201,9 @@ local function build_info_menu_props(state)
       actions_place = "inside" },
     {
       title = "进 度  " .. EpisodeProgressText,
-      value = { "script-message-to", mp.get_script_name(), "bgm-noop" },
+      hint = "查看单集 ›",
+      value = { "script-message-to", mp.get_script_name(), "bgm-open-episode-list" },
+      selectable = true,
       keep_open = true },
     {
       title = "手动匹配",
@@ -214,6 +228,11 @@ local function build_info_menu_props(state)
       value = { "script-message", "open-bangumi-url" },
       selectable = true},
   }
+  if EpisodeListMenu then
+    -- 保留进度栏的位置与文字，由 uosc 在右侧展开子菜单。
+    EpisodeListMenu.title = items[3].title
+    items[3] = EpisodeListMenu
+  end
   if IsNetworkPath then
     table.insert(items, #items, {
       title = "匹配模式：" .. (NetworkModeText ~= "" and NetworkModeText or "未知"),
@@ -231,8 +250,90 @@ local function build_info_menu_props(state)
     title = title,
     search_style = "disabled",
     callback = { mp.get_script_name(), "bgm-info-menu-event" },
+    on_close = EpisodeListRequest and {
+      "script-message-to", mp.get_script_name(), "bgm-cancel-episode-list", tostring(EpisodeListRequest),
+    } or nil,
     items = items,
   }
+end
+
+function M.show_episode_list(state, episodes_data, message, update)
+  local current = state.CurrentEpisodeInfo or {}
+  local local_data = state.EpisodesData or {}
+  local statuses = {}
+  for _, item in ipairs(local_data.data or {}) do
+    if item.episode and item.episode.id then
+      statuses[tostring(item.episode.id)] = item.type
+    end
+  end
+  local episodes = {}
+  for _, item in ipairs(episodes_data and episodes_data.data or {}) do
+    if type(item.episode) == "table" then
+      episodes[#episodes + 1] = item
+    end
+  end
+  table.sort(episodes, function(a, b)
+    local x, y = a.episode, b.episode
+    local xt, yt = tonumber(x.type) or 0, tonumber(y.type) or 0
+    if xt ~= yt then return xt < yt end
+    local xs, ys = tonumber(x.sort) or tonumber(x.ep) or 0, tonumber(y.sort) or tonumber(y.ep) or 0
+    if xs ~= ys then return xs < ys end
+    return (tonumber(x.id) or 0) < (tonumber(y.id) or 0)
+  end)
+  local items = {{
+    title = "返回番剧信息",
+    value = {"script-binding", "uosc/menu-back"},
+    keep_open = true,
+  }}
+  local types = {[1] = "SP", [2] = "OP", [3] = "ED", [4] = "预告", [5] = "MAD", [6] = "其他"}
+  local selected_index = 1
+  for _, item in ipairs(episodes) do
+    local ep = item.episode
+    local ep_type = tonumber(ep.type) or 0
+    local number = tostring(ep.sort or ep.ep or "?")
+    local label = ep_type == 0 and ("第" .. number .. "话")
+      or ((types[ep_type] or "其他") .. " " .. number)
+    local is_current = current.bgmEpisodeId ~= nil and tostring(ep.id) == tostring(current.bgmEpisodeId)
+    local status = statuses[tostring(ep.id)] or item.type
+    -- 与信息窗口一致：条目看过时正片视为已看，SP 等保留各自状态。
+    if ep_type == 0 and episode_status.collection_is_watched(local_data.collection) then status = 2 end
+    items[#items + 1] = {
+      title = label .. "  " .. (non_empty(ep.name_cn) or non_empty(ep.name) or "暂无标题"),
+      hint = (is_current and "播放中 · " or "") .. episode_status.map_status(tonumber(status)),
+      active = is_current,
+      bold = is_current,
+      value = {"script-message-to", mp.get_script_name(), "bgm-noop"},
+      keep_open = true,
+    }
+    if is_current then selected_index = #items end
+  end
+  if #episodes == 0 then
+    items[#items + 1] = M.format_menu_item(message or "暂无单集信息")
+  end
+  if state.EpisodeListFailed then
+    items[#items + 1] = {
+      title = "重新加载",
+      value = {"script-message-to", mp.get_script_name(), "bgm-open-episode-list"},
+      keep_open = true,
+    }
+  end
+  EpisodeListMenu = {
+    id = "menu_bgm_episode_list",
+    hint = episodes_data and ("共 " .. #episodes .. " 集") or "单集列表",
+    search_style = "on_demand",
+    footnote = "滚轮 / ↑↓ 浏览 · Ctrl+F 搜索 · ← 返回 · Esc 关闭",
+    items = items,
+  }
+  EpisodeListRequest = state.EpisodeListRequest
+  local props = build_info_menu_props(state)
+  if update then
+    -- 原位更新，用户在加载期间返回主菜单时不会被强行带回列表。
+    M.update_uosc_menu(props)
+  else
+    M.open_uosc_menu(props, EpisodeListMenu.id)
+  end
+  mp.commandv("script-message-to", "uosc", "select-menu-item",
+    "menu_bgm_info", tostring(selected_index), EpisodeListMenu.id)
 end
 
 local function build_plain_info_text(state)
@@ -291,6 +392,7 @@ function M.open_info_menu(state)
     toggle_plain_info_text(state)
     return
   end
+  M.clear_episode_list()
   M.open_uosc_menu(build_info_menu_props(state))
 end
 

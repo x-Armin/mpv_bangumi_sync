@@ -224,6 +224,48 @@ function M.get_user_episodes(subject_id)
   )
 end
 
+-- 信息窗口使用完整列表；不改变自动同步只统计正片的缓存口径。
+function M.get_all_user_episodes(subject_id, callback)
+  local items, offset = {}, 0
+  local cancelled, request_id = false, nil
+  local fetch_page
+  local function receive_page(res)
+    if cancelled then return end
+    local body = res and res.body
+    if not res or tonumber(res.status_code) ~= 200
+      or type(body) ~= "table" or type(body.data) ~= "table" then
+      callback(nil)
+      return
+    end
+    for _, item in ipairs(body.data) do
+      items[#items + 1] = item
+    end
+    offset = offset + #body.data
+    local total = tonumber(body.total)
+    if total and offset >= total then
+      callback({data = items, total = offset})
+      return
+    end
+    if #body.data == 0 then
+      -- 不将中途缺页误显示成完整列表。
+      callback(not total and {data = items, total = offset} or nil)
+      return
+    end
+    fetch_page()
+  end
+  fetch_page = function()
+    request_id = http.get(
+      get_api_url() .. string.format("/v0/users/-/collections/%d/episodes", subject_id),
+      get_request_options({params = {offset = offset, limit = 1000}, callback = receive_page, timeout = 30})
+    )
+  end
+  fetch_page()
+  return function()
+    cancelled = true
+    if request_id then mp.abort_async_command(request_id) end
+  end
+end
+
 -- 获取剧集状态
 function M.get_episode_status(episode_id)
   return M.get(string.format("/v0/users/-/collections/-/episodes/%d", episode_id))
