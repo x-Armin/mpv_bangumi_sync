@@ -4,6 +4,7 @@ local sync_context = require "src.services.sync_context"
 local bangumi_api = require "src.bangumi_api"
 local episode_matcher = require "src.episode_matcher"
 local utils = require "src.utils"
+local manual_binding = require "src.services.manual_binding"
 
 local M = {}
 
@@ -236,7 +237,8 @@ local function resolve_target_episode(episodes, episode_no)
 end
 
 local function build_context(title_info, bgm_id, bgm_source, subject, opts)
-  if not title_info.episode_no then
+  local binding = opts and opts.manual_binding
+  if not title_info.episode_no and not binding then
     return {
       status = "error",
       error = "EpisodeNumberNotFound",
@@ -245,11 +247,11 @@ local function build_context(title_info, bgm_id, bgm_source, subject, opts)
     }
   end
 
-  local runtime_episode_id = tonumber(bgm_id) * 10000 + title_info.episode_no
+  local runtime_episode_id = tonumber(bgm_id) * 10000 + (binding and 0 or title_info.episode_no)
   local episodes = sync_context.get_user_episodes_cached(
     runtime_episode_id,
     bgm_id,
-    {force_refresh = opts and opts.force_refresh == true}
+    {force_refresh = opts and opts.force_refresh == true, all_types = binding ~= nil}
   )
   if not episodes or not episodes.data then
     return {
@@ -260,7 +262,12 @@ local function build_context(title_info, bgm_id, bgm_source, subject, opts)
     }
   end
 
-  local target_ep, match_result = resolve_target_episode(episodes.data, title_info.episode_no)
+  local target_ep, match_result
+  if binding then
+    target_ep, match_result = manual_binding.find_episode(episodes.data, binding)
+  else
+    target_ep, match_result = resolve_target_episode(episodes.data, title_info.episode_no)
+  end
   if not target_ep or not target_ep.episode then
     return {
       status = "error",
@@ -288,6 +295,7 @@ local function build_context(title_info, bgm_id, bgm_source, subject, opts)
     episodeEp = resolved_ep,
     episodeSort = resolved_sort,
     episodeMatchMode = match_result and match_result.mode or nil,
+    manualEpisode = binding ~= nil,
     animeTitle = anime_title,
     episodeTitle = episode_title,
     bgmEpisodeId = episode.id,
@@ -326,15 +334,20 @@ end
 
 local function sync_context_execute(opts)
   opts = opts or {}
+  local binding = manual_binding.get()
+  opts.manual_binding = binding
   local title_info = title_guess.get_current_title_info()
-  if not title_info or not title_info.normalized_title then
+  if binding and (not title_info or not title_info.normalized_title) then
+    title_info = {title = binding.title or ("Bangumi " .. tostring(binding.subject_id))}
+  end
+  if not binding and (not title_info or not title_info.normalized_title) then
     return {
       status = "error",
       error = "StreamTitleError",
       reason = "TitleUnavailable",
     }
   end
-  if not title_info.episode_no then
+  if not title_info.episode_no and not binding then
     return {
       status = "error",
       error = "EpisodeNumberNotFound",
@@ -343,7 +356,12 @@ local function sync_context_execute(opts)
     }
   end
 
-  local bgm_id, bgm_source, subject = resolve_bgm_id(title_info, opts)
+  local bgm_id, bgm_source, subject
+  if binding then
+    bgm_id, bgm_source = binding.subject_id, "manual"
+  else
+    bgm_id, bgm_source, subject = resolve_bgm_id(title_info, opts)
+  end
   if not bgm_id then
     if bgm_source == "SaveFailed" then
       return {

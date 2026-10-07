@@ -10,6 +10,7 @@ local storage_gate = require "src.core.storage_gate"
 local episode_matcher = require "src.episode_matcher"
 local title_guess = require "src.title_guess"
 local title_variants = require "src.title_variants"
+local manual_binding = require "src.services.manual_binding"
 
 local M = {}
 
@@ -122,7 +123,8 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
   end
 
   local force_refresh = opts and opts.force_refresh
-  local episodes_path = db.get_path(episode_id, "episodes")
+  local all_types = opts and opts.all_types == true
+  local episodes_path = db.get_path(episode_id, all_types and "episodes_all" or "episodes")
   if not force_refresh then
     local cached = json_store.read(episodes_path, {
       max_age = EPISODES_CACHE_MAX_AGE,
@@ -151,8 +153,8 @@ local function get_user_episodes_cached(episode_id, bgm_id, opts)
       tostring(force_refresh == true)
     )
   )
-  local episodes = bangumi_api.get_user_episodes(bgm_id)
-  if not episodes or not episodes.body or not episodes.body.data then
+  local episodes = bangumi_api.get_user_episodes(bgm_id, {all_types = all_types})
+  if not episodes or tonumber(episodes.status_code or 0) ~= 200 or not episodes.body or not episodes.body.data then
     return nil
   end
   json_store.write(episodes_path, episodes.body, {atomic = true})
@@ -622,7 +624,8 @@ local function load_sync_state_from_db(sync_opts, video_source)
   )
 
   local folder_info = video_source.dir_path ~= "" and db.get_folder_info(video_source.dir_path) or nil
-  local manual_bgm_id = sync_opts.force_manual_bgm_id
+  local binding = not sync_opts.force_episode_id and manual_binding.get() or nil
+  local manual_bgm_id = binding and binding.subject_id or sync_opts.force_manual_bgm_id
   if not manual_bgm_id and folder_info and folder_info.manual and folder_info.bgm_id then
     manual_bgm_id = tonumber(folder_info.bgm_id)
   end
@@ -631,6 +634,7 @@ local function load_sync_state_from_db(sync_opts, video_source)
     db_record = db_record,
     folder_info = folder_info,
     manual_bgm_id = manual_bgm_id,
+    manual_binding = binding,
     episode_id = sync_opts.force_episode_id or (db_record and db_record.dandanplay_id),
   }
 end
@@ -653,7 +657,7 @@ local function sync_context_build(video_source, episode_id, episode_info, anime_
   }
 end
 
--- 处理手动 Bangumi 绑定流程，通过文件名集数映射 Bangumi episode。
+-- 优先使用当前视频的单集绑定，旧的目录绑定仍通过文件名集数匹配。
 -- 不适用时返回 nil；成功返回完整 context；失败返回对应 error。
 local function manual_bangumi_context_process(sync_opts, video_source, sync_state)
   local manual_bgm_id = sync_state.manual_bgm_id
@@ -662,7 +666,9 @@ local function manual_bangumi_context_process(sync_opts, video_source, sync_stat
   end
 
   local file_info = utils.extract_info_from_filename(video_source.filename or "")
-  local episode_no = file_info and file_info.episode or nil
+  local binding = sync_state.manual_binding
+  local episode_no = binding and (tonumber(binding.episode.ep) or tonumber(binding.episode.sort) or 0)
+    or (file_info and file_info.episode or nil)
   if not episode_no then
     mp.msg.error("无法从文件名解析集数: " .. tostring(video_source.filename))
     return {
@@ -672,8 +678,10 @@ local function manual_bangumi_context_process(sync_opts, video_source, sync_stat
     }
   end
 
-  local runtime_episode_id = manual_bgm_id * 10000 + episode_no
-  local episodes = get_user_episodes_cached(runtime_episode_id, manual_bgm_id, {force_refresh = sync_opts.refresh})
+  local runtime_episode_id = manual_bgm_id * 10000 + (binding and 0 or episode_no)
+  local episodes = get_user_episodes_cached(runtime_episode_id, manual_bgm_id, {
+    force_refresh = sync_opts.refresh, all_types = binding ~= nil,
+  })
   if not episodes or not episodes.data then
     mp.msg.error("获取Bangumi剧集列表失败: " .. tostring(manual_bgm_id))
     return {
@@ -683,7 +691,12 @@ local function manual_bangumi_context_process(sync_opts, video_source, sync_stat
     }
   end
 
-  local target_ep, match_result = find_target_episode(episodes.data, episode_no)
+  local target_ep, match_result
+  if binding then
+    target_ep, match_result = manual_binding.find_episode(episodes.data, binding)
+  else
+    target_ep, match_result = find_target_episode(episodes.data, episode_no)
+  end
   if not target_ep then
     local stats = match_result and match_result.stats or {}
     mp.msg.error(
@@ -734,6 +747,7 @@ local function manual_bangumi_context_process(sync_opts, video_source, sync_stat
     episodeEp = resolved_ep,
     episodeSort = resolved_sort,
     episodeMatchMode = match_result and match_result.mode or nil,
+    manualEpisode = binding ~= nil,
     animeTitle = anime_title,
     episodeTitle = episode_title,
     bgmEpisodeId = target_ep.episode and target_ep.episode.id or nil,
@@ -745,7 +759,9 @@ local function manual_bangumi_context_process(sync_opts, video_source, sync_stat
   }
 
   db.set_bgm_id(video_source.file_path, manual_bgm_id)
-  db.set_episode_info(runtime_episode_id, episode_info)
+  if not binding then
+    db.set_episode_info(runtime_episode_id, episode_info)
+  end
   return sync_context_build(
     video_source,
     runtime_episode_id,

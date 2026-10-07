@@ -109,9 +109,9 @@ local function run()
   mp.abort_async_command = function(id) aborted = id end
   local api = require "src.bangumi_api"
   local result, calls
-  local function start()
+  local function start(opts)
     requests, result, calls = {}, nil, 0
-    return api.get_user_episodes_async(123, function(value) result, calls = value, calls + 1 end)
+    return api.get_user_episodes_async(123, function(value) result, calls = value, calls + 1 end, opts)
   end
   start()
   assert(requests[1].options.params.episode_type == 0)
@@ -137,6 +137,12 @@ local function run()
   cancel()
   requests[1].options.callback({status_code = 200, body = {data = {}, total = 0}})
   assert(aborted == 1 and calls == 0)
+  start({all_types = true})
+  assert(requests[1].options.params.episode_type == nil, "manual selection must load special episodes too")
+  requests[1].options.callback({status_code = 200, body = {data = {{episode = {id = 22, type = 1}}}, total = 2}})
+  assert(requests[2].options.params.episode_type == nil, "all pages must retain the episode scope")
+  requests[2].options.callback({status_code = 200, body = {data = {{episode = {id = 23, type = 2}}}, total = 2}})
+  assert(calls == 1 and #result.data == 2)
 
   -- Exercise the actual message handlers, including late responses after closing.
   local messages, events, pending, shown = {}, {}, {}, {}
@@ -151,7 +157,8 @@ local function run()
   end
   local cache_path = os.tmpname()
   temporary_files[#temporary_files + 1] = cache_path
-  package.loaded["src.db"].get_path = function() return cache_path end
+  local cache_kind
+  package.loaded["src.db"].get_path = function(_, kind) cache_kind = kind; return cache_path end
   Options = {enable_auto_mark = false}
   package.loaded["src.config"].on_options_changed = function() end
   package.loaded["src.db"].prune = function() return 0 end
@@ -169,8 +176,8 @@ local function run()
   ui.show_episode_list = function(info, data, message, update)
     shown[#shown + 1] = {request = info.EpisodeListRequest, data = data, message = message, update = update}
   end
-  api.get_user_episodes_async = function(_, callback)
-    local request = {callback = callback}
+  api.get_user_episodes_async = function(_, callback, opts)
+    local request = {callback = callback, opts = opts}
     pending[#pending + 1] = request
     return function() request.cancelled = true end
   end
@@ -234,6 +241,14 @@ local function run()
   messages["bgm-open-episode-list"]()
   pending[6].callback(nil)
   assert(CurrentEpContext.episodes_data == nil and shown[#shown].message == "加载失败，请重试")
+  assert(json_store.write(cache_path, {data = "invalid"}))
+  CurrentEpContext = {bgm_id = 123, runtime_episode_id = 1230000, episode_info = {manualEpisode = true}}
+  messages["bgm-open-episode-list"]()
+  assert(cache_kind == "episodes_all" and pending[7].opts.all_types,
+    "manual selection fallback must use the full-list cache and request scope")
+  local special_data = {data = {{type = 0, episode = {id = 22, type = 1}}}}
+  pending[7].callback(special_data)
+  assert(read(cache_path).data[1].episode.id == 22 and shown[#shown].data == special_data)
 end
 
 local ok, err = xpcall(run, debug.traceback)
