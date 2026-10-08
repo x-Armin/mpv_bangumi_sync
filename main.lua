@@ -40,6 +40,16 @@ local compose_sync_message
 local update_episode_status_from_cache
 local reconcile_update_timer
 local mark_current_episode_status
+local EpisodeListRequest = 0
+local CancelEpisodeList = nil
+
+local function cancel_episode_list()
+  EpisodeListRequest = EpisodeListRequest + 1
+  if CancelEpisodeList then
+    CancelEpisodeList()
+    CancelEpisodeList = nil
+  end
+end
 
 local function prune_db_on_start()
   local removed = db.prune({max_age_days = 30, remove_missing = false})
@@ -73,6 +83,9 @@ local function reset_current_ep_context()
 end
 
 local function reset_globals()
+  cancel_episode_list()
+  ui_menu.clear_episode_list()
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
   reset_current_ep_context()
   CurrentNetworkMode = nil
   NetworkModeText = ""
@@ -512,6 +525,7 @@ end
 
 local function update_info_menu_view()
   ui_menu.update_info_menu({
+    EpisodesData = CurrentEpContext and CurrentEpContext.episodes_data,
     UoscAvailable = UoscAvailable,
     CurrentEpisodeInfo = CurrentEpisodeInfo,
     EpisodeStatusText = EpisodeStatusText,
@@ -524,6 +538,7 @@ end
 
 local function get_info_menu_state()
   return {
+    EpisodesData = CurrentEpContext and CurrentEpContext.episodes_data,
     UoscAvailable = UoscAvailable,
     CurrentEpisodeInfo = CurrentEpisodeInfo,
     EpisodeStatusText = EpisodeStatusText,
@@ -714,6 +729,9 @@ end)
 
 
 mp.register_event("end-file", function(event)
+  cancel_episode_list()
+  ui_menu.clear_episode_list()
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
   if not event then
     return
   end
@@ -723,6 +741,7 @@ mp.register_event("end-file", function(event)
 end)
 
 mp.register_event("shutdown", function()
+  cancel_episode_list()
   flush_pending_updates("shutdown", {detach = true})
 end)
 
@@ -764,6 +783,70 @@ mp.register_script_message("bgm-toggle-network-mode", function()
 end)
 
 mp.register_script_message("bgm-noop", function() end)
+
+local function valid_episode_cache(data)
+  return type(data) == "table" and type(data.data) == "table"
+end
+
+local function get_episode_list_cached(context)
+  if valid_episode_cache(context.episodes_data) then
+    return context.episodes_data
+  end
+  if not context.episodes_path and context.runtime_episode_id then
+    context.episodes_path = db.get_path(context.runtime_episode_id, "episodes")
+  end
+  if context.episodes_path then
+    -- 列表展示复用匹配缓存；过期检查与主动刷新仍由匹配流程负责。
+    local cached = json_store.read(context.episodes_path, {validate = valid_episode_cache})
+    if cached then
+      context.episodes_data = cached
+      return cached
+    end
+  end
+end
+
+mp.register_script_message("bgm-open-episode-list", function()
+  if not UoscAvailable then return end
+  cancel_episode_list()
+  local request = EpisodeListRequest
+  local context = CurrentEpContext
+  local state = get_info_menu_state()
+  if not context or not context.bgm_id then
+    ui_menu.show_episode_list(state, nil, "尚未匹配番剧，请返回后手动匹配")
+    return
+  end
+  local cached = get_episode_list_cached(context)
+  if cached then
+    state.EpisodesData = cached
+    ui_menu.show_episode_list(state, cached)
+    return
+  end
+  state.EpisodeListRequest = request
+  ui_menu.show_episode_list(state, nil, "正在加载单集…")
+  CancelEpisodeList = bangumi_api.get_user_episodes_async(context.bgm_id, function(episodes)
+    if CurrentEpContext ~= context or EpisodeListRequest ~= request then return end
+    CancelEpisodeList = nil
+    EpisodeListRequest = EpisodeListRequest + 1
+    -- 请求期间匹配或标记流程可能已更新缓存，优先保留本地最新状态。
+    local latest = get_episode_list_cached(context)
+    if latest then
+      episodes = latest
+    elseif episodes then
+      context.episodes_data = episodes
+      if context.episodes_path then
+        json_store.write(context.episodes_path, episodes, {atomic = true})
+      end
+    end
+    state = get_info_menu_state()
+    state.EpisodesData = episodes
+    state.EpisodeListFailed = episodes == nil
+    ui_menu.show_episode_list(state, episodes, "加载失败，请重试", true)
+  end)
+end)
+
+mp.register_script_message("bgm-cancel-episode-list", function(request)
+  if tonumber(request) == EpisodeListRequest then cancel_episode_list() end
+end)
 
 mp.register_script_message("bgm-info-menu-event", function(payload)
   local event = mp_utils.parse_json(payload or "")
@@ -853,6 +936,7 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
 end)
 
 mp.register_script_message("bgm-back-info-menu", function()
+  cancel_episode_list()
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_status")
   ui_menu.open_info_menu(get_info_menu_state())
 end)
