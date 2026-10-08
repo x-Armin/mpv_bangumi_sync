@@ -689,32 +689,40 @@ function M.get_current_title_info()
   end
 
   local is_network = path and utils.is_protocol(path)
+  local media_title = mp.get_property("media-title")
+  local filename_title = mp.get_property("filename/no-ext")
+  local path_title = nil
+  if path and path ~= "" then
+    if is_network then
+      path_title = url_tail_decode(path)
+    else
+      path_title = path:match("([^/\\]+)$") or path
+      path_title = path_title:match("^(.+)%.[^%.]+$") or path_title
+    end
+  end
+
+  local playlist_title = nil
+  if mp.get_property_native then
+    local playlist_pos = mp.get_property_number("playlist-pos")
+    local playlist = mp.get_property_native("playlist")
+    local item = playlist and playlist_pos and playlist[playlist_pos + 1] or nil
+    playlist_title = item and item.title or nil
+  end
+
   if is_network then
     add_candidate(mp.get_property("metadata/by-key/series"), "metadata-series", true)
     add_candidate(mp.get_property("metadata/by-key/ytdl_playlist_title"), "metadata-ytdl-playlist-title", true)
     add_candidate(mp.get_property("metadata/by-key/album"), "metadata-album", true)
     add_candidate(mp.get_property("options/title"), "options-title", true, parse_option_title_candidate)
-  end
-
-  add_candidate(mp.get_property("media-title"), "media-title", true)
-
-  if mp.get_property_native then
-    local playlist_pos = mp.get_property_number("playlist-pos")
-    local playlist = mp.get_property_native("playlist")
-    local item = playlist and playlist_pos and playlist[playlist_pos + 1] or nil
-    add_candidate(item and item.title, "playlist-title", false)
-  end
-
-  add_candidate(mp.get_property("filename/no-ext"), "filename", false)
-
-  if path and path ~= "" then
-    if is_network then
-      add_candidate(url_tail_decode(path), "url", false)
-    else
-      local filename = path:match("([^/\\]+)$") or path
-      filename = filename:match("^(.+)%.[^%.]+$") or filename
-      add_candidate(filename, "path", false)
-    end
+    add_candidate(media_title, "media-title", true)
+    add_candidate(playlist_title, "playlist-title", false)
+    add_candidate(filename_title, "filename", false)
+    add_candidate(path_title, "url", false)
+  else
+    add_candidate(filename_title, "filename", false)
+    add_candidate(path_title, "path", false)
+    add_candidate(media_title, "media-title", true)
+    add_candidate(playlist_title, "playlist-title", false)
   end
 
   local title_info = nil
