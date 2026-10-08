@@ -383,6 +383,8 @@ function M.get_path(episode_id, type_)
     return mp_utils.join_path(base_path, tostring(episode_id) .. ".json")
   elseif type_ == "episodes" then
     return mp_utils.join_path(base_path, "episodes.json")
+  elseif type_ == "episodes_all" then
+    return mp_utils.join_path(base_path, "episodes-all.json")
   else
     error("Unknown type: " .. tostring(type_))
   end

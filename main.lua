@@ -15,6 +15,9 @@ local episode_status = require "src.services.episode_status"
 local title_guess = require "src.title_guess"
 local input = require "mp.input"
 local ui_menu = require "src.ui_menu"
+local manual_binding = require "src.services.manual_binding"
+local PendingBgmEpisodes = nil
+local BgmEpisodeMenuSerial = 0
 
 mp.msg.info(string.format("%s v%s loaded", SCRIPT_NAME, SCRIPT_VERSION))
 
@@ -325,7 +328,8 @@ local function set_current_ep_context(context)
     bgm_url = context.bgm_url,
     storage = context.storage,
     runtime_episode_id = runtime_episode_id,
-    episodes_path = runtime_episode_id and db.get_path(runtime_episode_id, "episodes") or nil,
+    episodes_path = runtime_episode_id and db.get_path(runtime_episode_id,
+      episode_info and episode_info.manualEpisode and "episodes_all" or "episodes") or nil,
     episodes_data = context.episodes,
     episodes_ready = false,
     bgm_episode_id = episode_info and tonumber(episode_info.bgmEpisodeId) or nil,
@@ -395,6 +399,10 @@ end
 
 local function init(episode_id, opts)
   opts = opts or {}
+  if episode_id and not manual_binding.clear() then
+    mp.osd_message("清除旧的单集绑定失败，请重试", 3)
+    return
+  end
   local force_refresh = opts == true or (type(opts) == "table" and opts.force_refresh)
   reset_globals()
   local source = (type(opts) == "table" and opts.source) or (episode_id and "manual" or "auto")
@@ -475,26 +483,19 @@ local function init(episode_id, opts)
   }
 end
 
-local function bind_manual_bgm_and_reload(bgm_id)
-  if is_current_stream_mode() then
-    local ok, err = stream_context.bind_current_subject(bgm_id)
-    if not ok then
-      return false, err or "SaveFailed"
-    end
-    init(nil, { force_refresh = true, source = "manual_bgm", network_mode = "stream" })
-    return true, nil
-  end
-
-  local file_path = get_current_db_path()
-  if not file_path then
+local function bind_manual_bgm_and_reload(bgm_id, episode, title)
+  if not manual_binding.current_key() then
     return false, "PathUnavailable"
   end
-
-  local ok = db.set_manual_bgm_id(file_path, bgm_id)
-  if not ok then
+  if not manual_binding.save(bgm_id, episode, title) then
     return false, "SaveFailed"
   end
-
+  -- 保留原有的番剧级绑定，具体单集则仅属于当前视频。
+  if is_current_stream_mode() then
+    stream_context.bind_current_subject(bgm_id)
+  else
+    db.set_manual_bgm_id(get_current_db_path(), bgm_id)
+  end
   init(nil, {
     force_refresh = true,
     source = "manual_bgm",
@@ -502,6 +503,87 @@ local function bind_manual_bgm_and_reload(bgm_id)
     network_mode = resolve_network_mode(mp.get_property("path")),
   })
   return true, nil
+end
+
+local function select_bgm_episode(session, episode_id)
+  if session ~= PendingBgmEpisodes or session.key ~= manual_binding.current_key() then
+    mp.osd_message("播放文件已变化，请重新搜索并选择单集", 3)
+    return
+  end
+  local episode = session.episodes[tonumber(episode_id)]
+  if not episode then
+    mp.osd_message("无效的单集选择，请重试", 3)
+    return
+  end
+  local ok = bind_manual_bgm_and_reload(session.subject_id, episode, session.title)
+  if not ok then
+    mp.osd_message("保存Bangumi单集绑定失败，请重试", 3)
+    return
+  end
+  PendingBgmEpisodes = nil
+  mp.osd_message("已绑定：" .. manual_binding.episode_label(episode), 3)
+end
+
+local function open_bgm_episode_selection(subject_id, title)
+  subject_id = tonumber(subject_id)
+  local key = manual_binding.current_key()
+  if not subject_id or not key then
+    mp.osd_message("无法获取当前视频或Bangumi条目", 3)
+    return
+  end
+  BgmEpisodeMenuSerial = BgmEpisodeMenuSerial + 1
+  local session = {subject_id = subject_id, title = title or ("Bangumi " .. tostring(subject_id)),
+    key = key, serial = tostring(BgmEpisodeMenuSerial), episodes = {}}
+  PendingBgmEpisodes = session
+  local props = {
+    type = "menu_bgm_subject_episodes", title = "选择绑定单集: " .. session.title,
+    search_style = "on_demand", footnote = "正在加载全部单集...",
+    items = {ui_menu.format_menu_item("加载中...")},
+  }
+  if UoscAvailable then
+    mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_subject")
+    ui_menu.open_uosc_menu(props)
+  end
+  local res = bangumi_api.get_subject_episodes(subject_id)
+  local failed = not res or tonumber(res.status_code or 0) ~= 200
+    or not res.body or type(res.body.data) ~= "table"
+  local data = not failed and res.body.data or {}
+  local items, labels = {}, {}
+  for _, episode in ipairs(data) do
+    local id = tonumber(episode.id)
+    if id then
+      session.episodes[id] = episode
+      labels[#labels + 1] = manual_binding.episode_label(episode)
+      items[#items + 1] = {
+        title = labels[#labels], hint = "#" .. tostring(id),
+        value = {"script-message-to", mp.get_script_name(), "bgm-select-subject-episode", session.serial, tostring(id)},
+        keep_open = false, selectable = true,
+      }
+    end
+  end
+  if UoscAvailable then
+    props.footnote = "选择单集后绑定当前视频；使用 / 筛选"
+    if #items == 0 then
+      items = {ui_menu.format_menu_item(failed and "获取单集失败，请返回重试" or "该条目暂无单集")}
+    end
+    items[#items + 1] = {title = "返回搜索", value = {
+      "script-message-to", mp.get_script_name(), "bgm-open-bgm-subject-search"}, selectable = true}
+    props.items = items
+    ui_menu.update_uosc_menu(props)
+  elseif #items == 0 then
+    mp.osd_message(failed and "获取单集失败，请重试" or "该条目暂无单集", 3)
+  else
+    input.terminate()
+    input.select {
+      prompt = props.title, items = labels,
+      submit = function(idx)
+        local item = items[idx]
+        if item then
+          select_bgm_episode(session, item.value[5])
+        end
+      end,
+    }
+  end
 end
 
 flush_pending_updates = function(reason, opts)
@@ -569,7 +651,7 @@ local function refresh_current_ep_context(force_refresh)
   local episodes = sync_context.get_user_episodes_cached(
     context.runtime_episode_id,
     context.bgm_id,
-    {force_refresh = force_refresh == true}
+    {force_refresh = force_refresh == true, all_types = context.episode_info and context.episode_info.manualEpisode == true}
   )
   if not episodes or not episodes.data then
     return false
@@ -715,6 +797,7 @@ end)
 apply_auto_mark_mode({force_log = true})
 
 mp.register_event("file-loaded", function()
+  PendingBgmEpisodes = nil
   NetworkModeOverride = nil
   apply_auto_mark_mode()
   local path = mp.get_property "path"
@@ -793,7 +876,8 @@ local function get_episode_list_cached(context)
     return context.episodes_data
   end
   if not context.episodes_path and context.runtime_episode_id then
-    context.episodes_path = db.get_path(context.runtime_episode_id, "episodes")
+    context.episodes_path = db.get_path(context.runtime_episode_id,
+      context.episode_info and context.episode_info.manualEpisode and "episodes_all" or "episodes")
   end
   if context.episodes_path then
     -- 列表展示复用匹配缓存；过期检查与主动刷新仍由匹配流程负责。
@@ -841,7 +925,7 @@ mp.register_script_message("bgm-open-episode-list", function()
     state.EpisodesData = episodes
     state.EpisodeListFailed = episodes == nil
     ui_menu.show_episode_list(state, episodes, "加载失败，请重试", true)
-  end)
+  end, {all_types = context.episode_info and context.episode_info.manualEpisode == true})
 end)
 
 mp.register_script_message("bgm-cancel-episode-list", function(request)
@@ -881,7 +965,7 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
     local episodes = sync_context.get_user_episodes_cached(
       runtime_episode_id,
       bgm_id,
-      { force_refresh = true }
+      { force_refresh = true, all_types = CurrentEpisodeInfo and CurrentEpisodeInfo.manualEpisode == true }
     )
     if not episodes then
       mp.osd_message("刷新剧集信息失败", 2)
@@ -973,6 +1057,8 @@ mp.register_script_message("bgm-open-dandan-search", function()
 end)
 
 mp.register_script_message("bgm-open-bgm-subject-search", function()
+  PendingBgmEpisodes = nil
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_subject_episodes")
   MatchResults = nil
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_manual_source")
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_match")
@@ -1090,11 +1176,11 @@ mp.register_script_message("bgm-search-subjects", function(query)
 
   local items = {}
   for i, item in ipairs(res.body.data or {}) do
-    local title = item.name_cn or item.name or ("#" .. tostring(item.id))
+    local title = (item.name_cn and item.name_cn ~= "" and item.name_cn) or item.name or ("#" .. tostring(item.id))
     items[i] = {
       title = title,
       hint = "#" .. tostring(item.id),
-      value = { "script-message-to", mp.get_script_name(), "bgm-select-subject", tostring(item.id) },
+      value = { "script-message-to", mp.get_script_name(), "bgm-select-subject", tostring(item.id), title },
       keep_open = false,
       selectable = true,
     }
@@ -1110,33 +1196,22 @@ mp.register_script_message("bgm-search-subjects", function(query)
     search_debounce = "submit",
     search_suggestion = query,
     on_search = { "script-message-to", mp.get_script_name(), "bgm-search-subjects" },
-    footnote = is_current_stream_mode() and "选择条目后会绑定当前流媒体标题" or "选择条目后会绑定当前目录",
+    footnote = "选择番剧后，继续选择要绑定的单集",
     items = items,
   })
 end)
 
-mp.register_script_message("bgm-select-subject", function(subject_id)
-  local bgm_id = tonumber(subject_id)
-  if not bgm_id then
-    mp.msg.error("无效的Bangumi条目ID")
-    return
-  end
+mp.register_script_message("bgm-select-subject", function(subject_id, title)
+  open_bgm_episode_selection(subject_id, title)
+end)
 
-  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_subject")
-  local ok, err_code = bind_manual_bgm_and_reload(bgm_id)
-  if not ok then
-    if err_code == "PathUnavailable" then
-      mp.osd_message("无法获取当前文件路径", 2)
-      return
-    end
-    if err_code == "TitleUnavailable" then
-      mp.osd_message("无法解析当前流媒体标题", 2)
-      return
-    end
-    mp.osd_message("保存Bangumi目录绑定失败", 2)
+mp.register_script_message("bgm-select-subject-episode", function(serial, episode_id)
+  local session = PendingBgmEpisodes
+  if not session or serial ~= session.serial then
     return
   end
-  mp.osd_message(is_current_stream_mode() and "已绑定当前流媒体Bangumi条目" or "已绑定当前目录Bangumi条目", 2)
+  mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_subject_episodes")
+  select_bgm_episode(session, episode_id)
 end)
 
 mp.register_script_message("bgm-search-episodes", function(anime_title, anime_id)
@@ -1220,24 +1295,6 @@ mp.register_script_message("manual-match", function()
     end
     ui_menu.open_manual_match_source_menu()
     return
-  end
-  local bind_manual_subject = function(bgm_id)
-    local ok, err_code = bind_manual_bgm_and_reload(bgm_id)
-    if not ok then
-      if err_code == "PathUnavailable" then
-        mp.msg.error("无法获取当前文件路径")
-        mp.osd_message("无法获取当前文件路径", 3)
-        return
-      end
-      if err_code == "TitleUnavailable" then
-        mp.msg.error("无法解析当前流媒体标题")
-        mp.osd_message("无法解析当前流媒体标题", 3)
-        return
-      end
-      mp.msg.error("保存Bangumi目录绑定失败")
-      mp.osd_message("保存Bangumi目录绑定失败", 3)
-      return
-    end
   end
   local select_episode = function(anime_id)
     if not anime_id then
@@ -1325,7 +1382,8 @@ mp.register_script_message("manual-match", function()
           return
         end
         local selected = data[idx]
-        bind_manual_subject(selected.id)
+        local title = (selected.name_cn and selected.name_cn ~= "" and selected.name_cn) or selected.name
+        open_bgm_episode_selection(selected.id, title)
       end,
     }
   end

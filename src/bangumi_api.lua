@@ -216,16 +216,48 @@ function M.update_user_collection(subject_id, status, private)
   )
 end
 
--- 获取用户剧集
-function M.get_user_episodes(subject_id)
-  return M.get(
-    string.format("/v0/users/-/collections/%d/episodes", subject_id),
-    {offset = 0, limit = 1000, episode_type = 0}
-  )
+-- 拉取所有分页；任一页失败时不返回不完整列表。
+local function get_all_pages(uri, params)
+  local data = {}
+  params.offset = 0
+  params.limit = 100
+  while true do
+    local res = M.get(uri, params)
+    if not res or tonumber(res.status_code or 0) ~= 200
+      or not res.body or type(res.body.data) ~= "table" then
+      return res
+    end
+    local page = res.body.data
+    for _, item in ipairs(page) do
+      data[#data + 1] = item
+    end
+    params.offset = params.offset + #page
+    local total = tonumber(res.body.total)
+    if #page == 0 and total and params.offset < total then
+      return {status_code = 502, body = {error = "incomplete episode list"}}
+    end
+    if #page == 0 or (total and params.offset >= total) or (not total and #page < params.limit) then
+      res.body.data = data
+      return res
+    end
+  end
 end
 
--- 缓存缺失时异步补齐正片列表，与匹配缓存保持相同的数据范围。
-function M.get_user_episodes_async(subject_id, callback)
+-- 不限定章节类型，让手动选择也能覆盖特别篇、OP、ED 等。
+function M.get_subject_episodes(subject_id)
+  return get_all_pages("/v0/episodes", {subject_id = subject_id})
+end
+
+function M.get_user_episodes(subject_id, opts)
+  local params = {}
+  if not (opts and opts.all_types) then
+    params.episode_type = 0
+  end
+  return get_all_pages(string.format("/v0/users/-/collections/%d/episodes", subject_id), params)
+end
+
+-- 缓存缺失时异步补齐列表，与当前匹配缓存保持相同的数据范围。
+function M.get_user_episodes_async(subject_id, callback, opts)
   local items, offset = {}, 0
   local cancelled, request_id = false, nil
   local fetch_page
@@ -254,9 +286,13 @@ function M.get_user_episodes_async(subject_id, callback)
     fetch_page()
   end
   fetch_page = function()
+    local params = {offset = offset, limit = 1000}
+    if not (opts and opts.all_types) then
+      params.episode_type = 0
+    end
     request_id = http.get(
       get_api_url() .. string.format("/v0/users/-/collections/%d/episodes", subject_id),
-      get_request_options({params = {offset = offset, limit = 1000, episode_type = 0}, callback = receive_page, timeout = 30})
+      get_request_options({params = params, callback = receive_page, timeout = 30})
     )
   end
   fetch_page()

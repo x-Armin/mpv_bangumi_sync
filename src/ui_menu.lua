@@ -173,7 +173,7 @@ local function build_info_menu_props(state)
   local episode_title = non_empty(CurrentEpisodeInfo and CurrentEpisodeInfo.episodeTitle) or "未获取"
   local episode_ep = CurrentEpisodeInfo and CurrentEpisodeInfo.episodeEp
   if type(episode_ep) == "number" and episode_ep > 0 then
-    episode_title = string.format("第%d话  %s", episode_ep, episode_title)
+    episode_title = string.format("第%s话  %s", tostring(episode_ep), episode_title)
   end
   local status_title = "状态：" .. EpisodeStatusText
   local status_italic = false

@@ -37,7 +37,8 @@ function M.compute(current_episode_info, episodes_data)
   end
 
   if not episodes_data then
-    local episodes_path = db.get_path(current_episode_info.episodeId, "episodes")
+    local episodes_path = db.get_path(current_episode_info.episodeId,
+      current_episode_info.manualEpisode and "episodes_all" or "episodes")
     episodes_data = json_store.read(episodes_path)
   end
 
@@ -78,7 +79,7 @@ function M.compute(current_episode_info, episodes_data)
     end
   end
 
-  if not target and type(sort_no) == "number" and sort_no > 0 then
+  if not target and not current_episode_info.manualEpisode and type(sort_no) == "number" and sort_no > 0 then
     for _, ep_info in ipairs(episodes) do
       local current_sort = ep_info and ep_info.episode and tonumber(ep_info.episode.sort) or nil
       if current_sort and current_sort == sort_no then
@@ -89,7 +90,7 @@ function M.compute(current_episode_info, episodes_data)
     end
   end
 
-  if not target and type(ep) == "number" and ep > 0 then
+  if not target and not current_episode_info.manualEpisode and type(ep) == "number" and ep > 0 then
     local match_result = episode_matcher.match_by_number(episodes, ep)
     if match_result and match_result.target then
       target = match_result.target
@@ -97,7 +98,7 @@ function M.compute(current_episode_info, episodes_data)
     end
   end
 
-  if not target then
+  if not target and not current_episode_info.manualEpisode then
     local title = current_episode_info.episodeTitle or ""
     local max_conf = 0
     for _, ep_info in ipairs(episodes) do
@@ -117,7 +118,9 @@ function M.compute(current_episode_info, episodes_data)
   end
 
   local status = target and target.type or nil
-  if target and M.collection_is_watched(episodes_data.collection) then
+  local manual_special = current_episode_info.manualEpisode
+    and target and target.episode and tonumber(target.episode.type) ~= 0
+  if target and not manual_special and M.collection_is_watched(episodes_data.collection) then
     status = 2
     watched = total
   end
