@@ -224,8 +224,8 @@ function M.get_user_episodes(subject_id)
   )
 end
 
--- 信息窗口使用完整列表；不改变自动同步只统计正片的缓存口径。
-function M.get_all_user_episodes(subject_id, callback)
+-- 缓存缺失时异步补齐正片列表，与匹配缓存保持相同的数据范围。
+function M.get_user_episodes_async(subject_id, callback)
   local items, offset = {}, 0
   local cancelled, request_id = false, nil
   local fetch_page
@@ -256,7 +256,7 @@ function M.get_all_user_episodes(subject_id, callback)
   fetch_page = function()
     request_id = http.get(
       get_api_url() .. string.format("/v0/users/-/collections/%d/episodes", subject_id),
-      get_request_options({params = {offset = offset, limit = 1000}, callback = receive_page, timeout = 30})
+      get_request_options({params = {offset = offset, limit = 1000, episode_type = 0}, callback = receive_page, timeout = 30})
     )
   end
   fetch_page()

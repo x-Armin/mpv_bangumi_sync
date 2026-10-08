@@ -257,7 +257,7 @@ local function build_info_menu_props(state)
   }
 end
 
-function M.show_episode_list(state, episodes_data, message, update)
+function M.show_episode_list(state, episodes_data, message, update, preserve_selection)
   local current = state.CurrentEpisodeInfo or {}
   local local_data = state.EpisodesData or {}
   local statuses = {}
@@ -332,8 +332,10 @@ function M.show_episode_list(state, episodes_data, message, update)
   else
     M.open_uosc_menu(props, EpisodeListMenu.id)
   end
-  mp.commandv("script-message-to", "uosc", "select-menu-item",
-    "menu_bgm_info", tostring(selected_index), EpisodeListMenu.id)
+  if not preserve_selection then
+    mp.commandv("script-message-to", "uosc", "select-menu-item",
+      "menu_bgm_info", tostring(selected_index), EpisodeListMenu.id)
+  end
 end
 
 local function build_plain_info_text(state)
@@ -398,6 +400,13 @@ end
 
 function M.update_info_menu(state)
   if not state.UoscAvailable then
+    return
+  end
+  if EpisodeListMenu and type(state.EpisodesData) == "table"
+    and type(state.EpisodesData.data) == "table" then
+    -- 刷新或标记后的缓存变化同步到已展开的列表，保留浏览位置。
+    state.EpisodeListRequest = EpisodeListRequest
+    M.show_episode_list(state, state.EpisodesData, nil, true, true)
     return
   end
   M.update_uosc_menu(build_info_menu_props(state))

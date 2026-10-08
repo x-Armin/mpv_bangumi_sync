@@ -2,6 +2,7 @@
 -- mpv --no-config --load-scripts=no --idle=yes --vo=null --ao=null --script=tests/episode_list.lua
 local real_commandv = mp.commandv
 local mp_utils = require "mp.utils"
+local temporary_files = {}
 package.path = "./?.lua;./?/init.lua;" .. package.path
 
 local function run()
@@ -71,6 +72,11 @@ local function run()
   assert(menu_action == "update-menu" and submenu_id == nil, "completion must not reopen or navigate the menu")
   ui.update_info_menu(state)
   assert(root.items[3].items, "progress updates must preserve the submenu")
+  state.EpisodesData = {data = {{type = 2, episode = {id = 22, sort = 1}}}}
+  selected_index = nil
+  ui.update_info_menu(state)
+  assert(menu.items[2].hint == "播放中 · 已看" and selected_index == nil,
+    "cache refresh must update statuses without moving the selection")
   ui.open_info_menu(state)
   assert(not root.items[3].items, "reopening info starts a fresh list")
 
@@ -105,10 +111,10 @@ local function run()
   local result, calls
   local function start()
     requests, result, calls = {}, nil, 0
-    return api.get_all_user_episodes(123, function(value) result, calls = value, calls + 1 end)
+    return api.get_user_episodes_async(123, function(value) result, calls = value, calls + 1 end)
   end
   start()
-  assert(requests[1].options.params.episode_type == nil)
+  assert(requests[1].options.params.episode_type == 0)
   assert(requests[1].options.proxy == "http://test-proxy")
   assert(requests[1].options.headers.Authorization == "Bearer test-token")
   local page = {}
@@ -134,6 +140,18 @@ local function run()
 
   -- Exercise the actual message handlers, including late responses after closing.
   local messages, events, pending, shown = {}, {}, {}, {}
+  -- Use real JSON disk reads/writes under mpv, and count accesses.
+  package.loaded["src.paths"].ensure_dir = function() end
+  local json_store = assert(loadfile("src/core/json_store.lua"))()
+  package.loaded["src.core.json_store"] = json_store
+  local read, disk_reads = json_store.read, 0
+  json_store.read = function(...)
+    disk_reads = disk_reads + 1
+    return read(...)
+  end
+  local cache_path = os.tmpname()
+  temporary_files[#temporary_files + 1] = cache_path
+  package.loaded["src.db"].get_path = function() return cache_path end
   Options = {enable_auto_mark = false}
   package.loaded["src.config"].on_options_changed = function() end
   package.loaded["src.db"].prune = function() return 0 end
@@ -151,7 +169,7 @@ local function run()
   ui.show_episode_list = function(info, data, message, update)
     shown[#shown + 1] = {request = info.EpisodeListRequest, data = data, message = message, update = update}
   end
-  api.get_all_user_episodes = function(_, callback)
+  api.get_user_episodes_async = function(_, callback)
     local request = {callback = callback}
     pending[#pending + 1] = request
     return function() request.cancelled = true end
@@ -160,6 +178,22 @@ local function run()
   messages["uosc-version"]()
   messages["bgm-open-episode-list"]()
   assert(shown[#shown].message:find("尚未匹配", 1, true))
+  local memory_data = {data = {{type = 2, episode = {id = 10, sort = 1, name = "Cached episode"}}}}
+  CurrentEpContext = {bgm_id = 123, episodes_data = memory_data, episodes_path = cache_path}
+  messages["bgm-open-episode-list"]()
+  assert(shown[#shown].data == memory_data and disk_reads == 0 and #pending == 0,
+    "memory cache must display immediately without disk or network access")
+  assert(memory_data.data[1].type == 2, "locally watched episodes must remain watched")
+  assert(json_store.write(cache_path, memory_data))
+  CurrentEpContext = {bgm_id = 123, runtime_episode_id = 1230001}
+  messages["bgm-open-episode-list"]()
+  assert(disk_reads == 1 and #pending == 0 and CurrentEpContext.episodes_path == cache_path)
+  assert(CurrentEpContext.episodes_data.data[1].episode.name == "Cached episode")
+  messages["bgm-open-episode-list"]()
+  assert(disk_reads == 1 and #pending == 0, "disk cache must be retained in memory")
+  CurrentEpContext.episodes_data = {data = {}}
+  messages["bgm-open-episode-list"]()
+  assert(#shown[#shown].data.data == 0 and #pending == 0, "an empty cache is still valid")
   CurrentEpContext = {bgm_id = 123}
   messages["bgm-open-episode-list"]()
   local token = shown[#shown].request
@@ -173,15 +207,39 @@ local function run()
   pending[2].callback({data = {}})
   assert(shown[#shown].data and shown[#shown].request == nil and shown[#shown].update == true)
   messages["bgm-open-episode-list"]()
+  assert(#pending == 2, "a successful fallback must be reused")
+  CurrentEpContext = {bgm_id = 123}
+  messages["bgm-open-episode-list"]()
   events["end-file"]({reason = "stop"})
   before = #shown
   pending[3].callback({data = {}})
   assert(pending[3].cancelled and #shown == before)
+  -- Invalid disk cache falls back to a request and is replaced only on success.
+  assert(json_store.write(cache_path, {data = "invalid"}))
+  CurrentEpContext = {bgm_id = 123, episodes_data = false, episodes_path = cache_path}
+  messages["bgm-open-episode-list"]()
+  assert(#pending == 4 and shown[#shown].request)
+  pending[4].callback(memory_data)
+  assert(read(cache_path).data[1].type == 2 and CurrentEpContext.episodes_data == memory_data)
+  CurrentEpContext.episodes_data = nil
+  messages["bgm-open-episode-list"]()
+  assert(#pending == 4 and shown[#shown].data.data[1].type == 2,
+    "fallback results must be reusable from disk")
+  CurrentEpContext = {bgm_id = 123}
+  messages["bgm-open-episode-list"]()
+  CurrentEpContext.episodes_data = memory_data
+  pending[5].callback({data = {{type = 0, episode = {id = 10}}}})
+  assert(shown[#shown].data == memory_data, "late network data must not overwrite new local state")
+  CurrentEpContext = {bgm_id = 123}
+  messages["bgm-open-episode-list"]()
+  pending[6].callback(nil)
+  assert(CurrentEpContext.episodes_data == nil and shown[#shown].message == "加载失败，请重试")
 end
 
 local ok, err = xpcall(run, debug.traceback)
+for _, path in ipairs(temporary_files) do os.remove(path) end
 if ok then
-  print("PASS: episode list UI, pagination, HTTP regression, and message lifecycle checks")
+  print("PASS: episode list UI, memory/disk cache, fallback persistence, pagination, HTTP, and lifecycle checks")
 else
   mp.msg.error(err)
 end

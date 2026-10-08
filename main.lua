@@ -525,6 +525,7 @@ end
 
 local function update_info_menu_view()
   ui_menu.update_info_menu({
+    EpisodesData = CurrentEpContext and CurrentEpContext.episodes_data,
     UoscAvailable = UoscAvailable,
     CurrentEpisodeInfo = CurrentEpisodeInfo,
     EpisodeStatusText = EpisodeStatusText,
@@ -537,6 +538,7 @@ end
 
 local function get_info_menu_state()
   return {
+    EpisodesData = CurrentEpContext and CurrentEpContext.episodes_data,
     UoscAvailable = UoscAvailable,
     CurrentEpisodeInfo = CurrentEpisodeInfo,
     EpisodeStatusText = EpisodeStatusText,
@@ -782,24 +784,61 @@ end)
 
 mp.register_script_message("bgm-noop", function() end)
 
+local function valid_episode_cache(data)
+  return type(data) == "table" and type(data.data) == "table"
+end
+
+local function get_episode_list_cached(context)
+  if valid_episode_cache(context.episodes_data) then
+    return context.episodes_data
+  end
+  if not context.episodes_path and context.runtime_episode_id then
+    context.episodes_path = db.get_path(context.runtime_episode_id, "episodes")
+  end
+  if context.episodes_path then
+    -- 列表展示复用匹配缓存；过期检查与主动刷新仍由匹配流程负责。
+    local cached = json_store.read(context.episodes_path, {validate = valid_episode_cache})
+    if cached then
+      context.episodes_data = cached
+      return cached
+    end
+  end
+end
+
 mp.register_script_message("bgm-open-episode-list", function()
   if not UoscAvailable then return end
   cancel_episode_list()
   local request = EpisodeListRequest
   local context = CurrentEpContext
   local state = get_info_menu_state()
-  state.EpisodesData = context and context.episodes_data
   if not context or not context.bgm_id then
     ui_menu.show_episode_list(state, nil, "尚未匹配番剧，请返回后手动匹配")
     return
   end
+  local cached = get_episode_list_cached(context)
+  if cached then
+    state.EpisodesData = cached
+    ui_menu.show_episode_list(state, cached)
+    return
+  end
   state.EpisodeListRequest = request
-  ui_menu.show_episode_list(state, nil, "正在加载全部单集…")
-  CancelEpisodeList = bangumi_api.get_all_user_episodes(context.bgm_id, function(episodes)
+  ui_menu.show_episode_list(state, nil, "正在加载单集…")
+  CancelEpisodeList = bangumi_api.get_user_episodes_async(context.bgm_id, function(episodes)
     if CurrentEpContext ~= context or EpisodeListRequest ~= request then return end
     CancelEpisodeList = nil
     EpisodeListRequest = EpisodeListRequest + 1
-    state.EpisodeListRequest = nil
+    -- 请求期间匹配或标记流程可能已更新缓存，优先保留本地最新状态。
+    local latest = get_episode_list_cached(context)
+    if latest then
+      episodes = latest
+    elseif episodes then
+      context.episodes_data = episodes
+      if context.episodes_path then
+        json_store.write(context.episodes_path, episodes, {atomic = true})
+      end
+    end
+    state = get_info_menu_state()
+    state.EpisodesData = episodes
     state.EpisodeListFailed = episodes == nil
     ui_menu.show_episode_list(state, episodes, "加载失败，请重试", true)
   end)
