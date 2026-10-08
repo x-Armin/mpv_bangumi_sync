@@ -158,6 +158,17 @@ end
 
 local function build_info_menu_props(state)
   local CurrentEpisodeInfo = state.CurrentEpisodeInfo
+  local title = non_empty(CurrentEpisodeInfo and CurrentEpisodeInfo.animeTitle)
+    or non_empty(title_guess.get_default_search_query())
+    or "未获取"
+  if state.NotInStorage then
+    return {
+      type = "menu_bgm_info",
+      title = title,
+      search_style = "disabled",
+      items = { M.format_menu_item("视频不在工作目录") },
+    }
+  end
   local EpisodeStatusText = state.EpisodeStatusText or "未获取"
   local EpisodeProgressText = state.EpisodeProgressText or "未获取"
   local IsNetworkPath = state.IsNetworkPath == true
@@ -165,11 +176,6 @@ local function build_info_menu_props(state)
   local NetworkModeIcon = "sync_alt"
   local AutoMarkText = state.AutoMarkText or "开启"
   local AutoMarkIcon = (AutoMarkText == "开启") and "toggle_on" or "toggle_off"
-  local title_guess_mod = title_guess
-
-  local title = non_empty(CurrentEpisodeInfo and CurrentEpisodeInfo.animeTitle)
-    or non_empty(title_guess_mod.get_default_search_query())
-    or "未获取"
   local episode_title = non_empty(CurrentEpisodeInfo and CurrentEpisodeInfo.episodeTitle) or "未获取"
   local episode_ep = CurrentEpisodeInfo and CurrentEpisodeInfo.episodeEp
   if type(episode_ep) == "number" and episode_ep > 0 then
@@ -339,6 +345,9 @@ function M.show_episode_list(state, episodes_data, message, update, preserve_sel
 end
 
 local function build_plain_info_text(state)
+  if state.NotInStorage then
+    return "视频不在工作目录"
+  end
   local current_episode_info = state.CurrentEpisodeInfo or {}
   local title = non_empty(current_episode_info.animeTitle) or "未获取"
   local episode_title = non_empty(current_episode_info.episodeTitle)
@@ -401,6 +410,9 @@ end
 function M.update_info_menu(state)
   if not state.UoscAvailable then
     return
+  end
+  if state.NotInStorage then
+    M.clear_episode_list()
   end
   if EpisodeListMenu and type(state.EpisodesData) == "table"
     and type(state.EpisodesData.data) == "table" then

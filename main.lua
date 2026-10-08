@@ -45,6 +45,7 @@ local reconcile_update_timer
 local mark_current_episode_status
 local EpisodeListRequest = 0
 local CancelEpisodeList = nil
+local NotInStorage = false
 
 local function cancel_episode_list()
   EpisodeListRequest = EpisodeListRequest + 1
@@ -86,6 +87,7 @@ local function reset_current_ep_context()
 end
 
 local function reset_globals()
+  NotInStorage = false
   cancel_episode_list()
   ui_menu.clear_episode_list()
   mp.commandv("script-message-to", "uosc", "close-menu", "menu_bgm_info")
@@ -460,9 +462,10 @@ local function init(episode_id, opts)
       end,
     err = function(err)
       if err and err.error == "VideoPathError" then
-    if err.reason == "NotInStorage" then
-      mp.msg.verbose("视频不在配置的存储路径内，跳过初始化")
-      return
+        if err.reason == "NotInStorage" then
+          NotInStorage = true
+          mp.msg.verbose("视频不在配置的存储路径内，跳过初始化")
+          return
         end
         if err.reason == "InvalidPath" then
           mp.msg.error("视频路径无效")
@@ -607,6 +610,7 @@ end
 
 local function update_info_menu_view()
   ui_menu.update_info_menu({
+    NotInStorage = NotInStorage,
     EpisodesData = CurrentEpContext and CurrentEpContext.episodes_data,
     UoscAvailable = UoscAvailable,
     CurrentEpisodeInfo = CurrentEpisodeInfo,
@@ -620,6 +624,7 @@ end
 
 local function get_info_menu_state()
   return {
+    NotInStorage = NotInStorage,
     EpisodesData = CurrentEpContext and CurrentEpContext.episodes_data,
     UoscAvailable = UoscAvailable,
     CurrentEpisodeInfo = CurrentEpisodeInfo,
