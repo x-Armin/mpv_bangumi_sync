@@ -113,6 +113,7 @@ storage2_batch_sync_threshold=4
 bangumi_api=https://api.bgm.tv
 bgm_proxy=
 bgm_proxy_skip_cert_verify=no
+enable_stream_match=yes
 network_file_hosts=
 ```
 
@@ -123,6 +124,7 @@ network_file_hosts=
 - `bangumi_api`：Bangumi API URL，可设置为镜像或兼容 API 地址。必须使用完整 URL，例如 `https://api.bgm.tv`。**请自行确认 API URL 的安全性；因使用第三方 API URL 产生的问题，本插件不负责**
 - `bgm_proxy`：Bangumi API 代理，留空表示不使用代理。该代理不影响弹弹play API。
 - `bgm_proxy_skip_cert_verify`：配置 Bangumi API 代理后是否跳过 TLS 证书验证，默认 `no`，仅在 `bgm_proxy` 非空时生效。只应在使用可信代理但频繁报TLS证书校验失败时开启；**开启后可能导致中间人攻击风险，请勿在不可信网络或不可信代理中使用**。
+- `enable_stream_match`：默认 `yes`。设为 `no` 后，禁用流媒体（网络播放）匹配
 - `network_file_hosts`：网络 URL 完整文件域名/IP 列表，使用英文逗号分隔。命中的 host 会按完整视频文件处理。
 
 代理示例：

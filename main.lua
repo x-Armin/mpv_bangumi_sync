@@ -820,6 +820,10 @@ mp.register_event("file-loaded", function()
   local path = mp.get_property "path"
   local network_mode = resolve_network_mode(path)
   if network_mode then
+    if network_mode == "stream" and not Options.enable_stream_match then
+      mp.msg.verbose("stream match disabled, skip network playback: ", path)
+      return
+    end
     mp.msg.verbose("Initializing network playback:", path, "mode:", network_mode)
     init(nil, { network_mode = network_mode })
     return

@@ -30,6 +30,9 @@ Options = {
   -- 最后一集同步后，全部正片已看时自动将条目标记为看过。
   enable_auto_complete = false,
 
+    -- 流媒体（网络播放）匹配（开启/禁用）
+    enable_stream_match = true,
+
   -- 观看进度达到该比例时标记为“已看”（0~1）
   progress_mark_threshold = 0.9,
   storage1_batch_sync_threshold = 1,
@@ -213,6 +216,7 @@ local function apply_options()
   Options.storage2 = normalize_string(Options.storage2, "")
   Options.enable_auto_mark = normalize_boolean(Options.enable_auto_mark, true)
   Options.enable_auto_complete = normalize_boolean(Options.enable_auto_complete, false)
+  Options.enable_stream_match = normalize_boolean(Options.enable_stream_match, true)
   Options.storage1_list = parse_storages(Options.storage1)
   Options.storage2_list = parse_storages(Options.storage2)
   Options.network_file_hosts_list = parse_comma_list(Options.network_file_hosts)
