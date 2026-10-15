@@ -1,4 +1,5 @@
 local mp_utils = require "mp.utils"
+local config = require "src.config"
 
 local M = {}
 local windows_fs = nil
@@ -175,8 +176,53 @@ local function get_mpv_config_dir()
   end
 end
 
+-- 读取用户配置的数据目录（config.options.data_path），未配置返回 nil
+local function get_custom_data_path()
+  local value = config.options and config.options.data_path
+  if type(value) ~= "string" then
+    return nil
+  end
+  value = value:match("^%s*(.-)%s*$")
+  return value ~= "" and value or nil
+end
+
+-- 展开 mpv 路径说明符（~~/ ~~home/ ~/ 等），其余值原样返回
+local function expand_mpv_path(value)
+  if value:sub(1, 1) ~= "~" then
+    return value
+  end
+  local ok, expanded = pcall(mp.command_native, { "normalize-path", value })
+  if ok and type(expanded) == "string" and expanded ~= "" then
+    return expanded
+  end
+  mp.msg.warn("expand_mpv_path: normalize-path 失败, 使用原始值: " .. value)
+  return value
+end
+
+local function is_absolute_path(path)
+  return path:match("^/") ~= nil
+    or path:match("^%a:[/\\]") ~= nil
+    or path:match("^\\\\") ~= nil
+end
+
 -- 获取数据目录（用于存储缓存和数据库）
+-- 配置了 data_path 时优先使用（绝对路径直接使用，相对路径基于 mpv 配置目录解析），
+-- 未配置时使用默认目录 <mpv配置目录>/script-data/mpv_bangumi_sync
 function M.get_data_path()
+  local custom = get_custom_data_path()
+  if custom then
+    local normalized = expand_mpv_path(custom):gsub("\\", "/")
+    if is_absolute_path(normalized) then
+      return normalized
+    end
+    local config_dir = get_mpv_config_dir()
+    if not config_dir then
+      mp.msg.error("get_data_path: data_path 为相对路径但无法确定 mpv 配置目录")
+      return nil
+    end
+    return mp_utils.join_path(config_dir, normalized)
+  end
+
   local config_dir = get_mpv_config_dir()
   mp.msg.verbose("get_data_path: config_dir is " .. tostring(config_dir))
   if not config_dir then
@@ -254,18 +300,13 @@ function M.remove_dir(path)
 end
 
 -- 初始化路径
-local config_dir = get_mpv_config_dir()
-if config_dir then
-  M.DATA_PATH = M.get_data_path()
-  if M.DATA_PATH then
-    M.ensure_dir(M.DATA_PATH)
-  else
-    mp.msg.error("无法确定数据目录路径")
-    M.DATA_PATH = ""
-  end
+M.DATA_PATH = M.get_data_path()
+if M.DATA_PATH then
+  M.ensure_dir(M.DATA_PATH)
 else
-  mp.msg.error("无法确定mpv配置目录")
+  mp.msg.error("无法确定数据目录路径")
   M.DATA_PATH = ""
 end
 
 return M
+

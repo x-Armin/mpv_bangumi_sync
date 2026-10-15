@@ -3,6 +3,10 @@ local opt = require "mp.options"
 local DEFAULT_BANGUMI_API = "https://api.bgm.tv"
 
 Options = {
+  -- 数据目录路径。留空使用默认: <mpv配置目录>/script-data/mpv_bangumi_sync
+  -- 支持绝对路径；相对路径相对于 mpv 配置目录解析。脚本启动时读取。
+  data_path = "",
+
   -- Bangumi访问令牌（必需）
   bgm_access_token = "",
 
@@ -201,6 +205,7 @@ local function build_storage_groups()
 end
 
 local function apply_options()
+  Options.data_path = normalize_string(Options.data_path, "")
   Options.bgm_access_token = normalize_string(Options.bgm_access_token, "")
   Options.bangumi_api = normalize_bangumi_api(Options.bangumi_api)
   Options.bgm_proxy = normalize_string(Options.bgm_proxy, "")
