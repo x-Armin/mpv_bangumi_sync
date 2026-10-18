@@ -559,6 +559,58 @@ local function parse_option_title_candidate(raw_title, source)
   return parse_text_candidate(raw_title, source, true)
 end
 
+-- 本地缓存解析保留未知季数，不沿用流媒体标题默认第一季的约定。
+-- 目录只提取标题和季数，避免把番剧名中的数字误当成集数。
+function M.parse_local_name(name, is_directory)
+  local text = (name or ""):gsub("[_%.]", " ")
+  local season, conflict
+  local function remember_season(value)
+    value = tonumber(value)
+    if season and value and season ~= value then
+      conflict = true
+    end
+    season = season or value
+    return " "
+  end
+  local compact_season = text:match("%f[%w][sS](%d+)%s*[eE]%d+")
+  if compact_season then
+    remember_season(compact_season)
+  end
+  for _, pattern in ipairs({
+    "%f[%w][sS](%d+)%f[%W]",
+    "%f[%w][sS][eE][aA][sS][oO][nN]%s*(%d+)%f[%D]",
+    "%f[%w](%d+)[nrdsth]+%s+[sS][eE][aA][sS][oO][nN]%f[%W]",
+  }) do
+    text = text:gsub(pattern, remember_season)
+  end
+  for _, word in ipairs({"季", "部"}) do
+    text = text:gsub("(第%s*(.-)%s*" .. word .. ")", function(full, number)
+      number = trim(number)
+      local value = tonumber(number) or (is_chinese_number_text(number) and chinese_to_number(number))
+      return value and remember_season(value) or full
+    end)
+  end
+
+  local parsed = not is_directory and parse_text_candidate(text, "filename", false) or nil
+  if parsed and parsed.season_explicit then
+    remember_season(parsed.season)
+  end
+  local title = is_directory and title_replace(text) or (parsed and parsed.title)
+  local normalized = utils.normalize_search_title(title)
+  if normalized and (normalized:match("^%d+$") or normalized:match("^ep?%d+$")
+    or normalized:match("^s%d+e%d+$")) then
+    title, normalized = nil, nil
+  end
+  local episode = not is_directory and utils.extract_info_from_filename((name or "") .. ".mkv").episode or nil
+  return {
+    title = normalized and trim(title) or nil,
+    normalized_title = normalized,
+    season = season,
+    episode_no = parsed and parsed.episode_no or episode,
+    conflict = conflict == true,
+  }
+end
+
 local function parse_title()
   local path = mp.get_property("path")
   local filename = mp.get_property("filename/no-ext")

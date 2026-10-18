@@ -1,6 +1,7 @@
 local mp_utils = require "mp.utils"
 local paths = require "src.paths"
 local utils = require "src.utils"
+local match_identity = require "src.match_identity"
 
 local M = {}
 
@@ -24,32 +25,7 @@ local function normalize_path(path)
   return path:gsub("\\", "/")
 end
 
-local function is_cache_key(value)
-  return type(value) == "string" and value:match("^.+|s%d+$") ~= nil
-end
-
--- 缓存按“搜索标题清洗结果 + 季数”隔离，例如 example|s2。
-function M.make_cache_key(title_info)
-  if type(title_info) ~= "table" then
-    return nil
-  end
-
-  local normalized_title = utils.normalize_search_title(title_info.title)
-  if not normalized_title then
-    return nil
-  end
-
-  local season = tonumber(title_info.season)
-  if not season and title_info.season_hint then
-    season = tonumber(tostring(title_info.season_hint):lower():match("^s0*(%d+)$"))
-  end
-  season = math.floor(season or 1)
-  if season < 1 then
-    season = 1
-  end
-
-  return normalized_title .. "|s" .. tostring(season)
-end
+local is_cache_key = match_identity.is_cache_key
 
 local function split_path(path)
   if not path or path == "" then

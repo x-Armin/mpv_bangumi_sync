@@ -6,7 +6,7 @@ local sync_context = require "src.services.sync_context"
 local config = require "src.config"
 local episode_matcher = require "src.episode_matcher"
 local storage_gate = require "src.core.storage_gate"
-local title_guess = require "src.title_guess"
+local match_identity = require "src.match_identity"
 
 local M = {}
 
@@ -245,7 +245,7 @@ local function get_current_file_path()
 end
 
 local function get_current_cache_key()
-  return db.make_cache_key(title_guess.get_current_title_info())
+  return match_identity.get_current().cache_key
 end
 
 local function extract_episode_no_from_filename(file_path)

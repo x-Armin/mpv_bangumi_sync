@@ -11,6 +11,7 @@ local episode_matcher = require "src.episode_matcher"
 local title_guess = require "src.title_guess"
 local title_variants = require "src.title_variants"
 local manual_binding = require "src.services.manual_binding"
+local match_identity = require "src.match_identity"
 
 local M = {}
 
@@ -292,10 +293,13 @@ local function anime_info_matches_filename(anime_info, filename)
 end
 
 local function can_use_autoload_source(video_source, sync_state, episode_id)
-  if not episode_id then
+  if not episode_id or video_source.identity.scope == "file" then
     return false
   end
   local cache_info = sync_state and sync_state.cache_info or nil
+  if video_source.identity.title_source == "directory" and cache_info and cache_info.anime_id then
+    return true
+  end
   if folder_entry_matches_current(cache_info and cache_info.entries, video_source.filename) then
     return true
   end
@@ -586,8 +590,8 @@ local function video_source_process(sync_opts)
     dir_path, filename = split_file_path(file_path)
   end
 
-  local title_info = title_guess.get_current_title_info()
-  local cache_key = db.make_cache_key(title_info)
+  local identity = match_identity.get_current()
+  local cache_key = identity.cache_key
   if not cache_key then
     mp.msg.verbose("sync_context: 无法生成标题季度缓存键，跳过本地匹配缓存")
   end
@@ -598,6 +602,7 @@ local function video_source_process(sync_opts)
     dir_path = dir_path,
     filename = filename,
     cache_key = cache_key,
+    identity = identity,
     storage_config = storage_config,
     remote_video_info = remote_video_info,
     is_remote_file = is_remote_file,
@@ -650,7 +655,7 @@ local function sync_context_build(video_source, episode_id, episode_info, anime_
   }
 end
 
--- 优先使用当前视频的单集绑定，旧的目录绑定仍通过文件名集数匹配。
+-- 优先使用当前视频的单集绑定，番剧级绑定则通过解析出的集数匹配。
 -- 不适用时返回 nil；成功返回完整 context；失败返回对应 error。
 local function manual_bangumi_context_process(sync_opts, video_source, sync_state)
   local manual_bgm_id = sync_state.manual_bgm_id
@@ -661,7 +666,7 @@ local function manual_bangumi_context_process(sync_opts, video_source, sync_stat
   local file_info = utils.extract_info_from_filename(video_source.filename or "")
   local binding = sync_state.manual_binding
   local episode_no = binding and (tonumber(binding.episode.ep) or tonumber(binding.episode.sort) or 0)
-    or (file_info and file_info.episode or nil)
+    or video_source.identity.episode_no or (file_info and file_info.episode or nil)
   if not episode_no then
     mp.msg.error("无法从文件名解析集数: " .. tostring(video_source.filename))
     return {

@@ -13,6 +13,7 @@ local mp_utils = require "mp.utils"
 local json_store = require "src.core.json_store"
 local episode_status = require "src.services.episode_status"
 local title_guess = require "src.title_guess"
+local match_identity = require "src.match_identity"
 local input = require "mp.input"
 local ui_menu = require "src.UI.uosc_menu"
 local ui_info = require "src.UI.draw_menu"
@@ -217,7 +218,7 @@ local function get_current_db_path()
 end
 
 local function get_current_cache_key()
-  return db.make_cache_key(title_guess.get_current_title_info())
+  return match_identity.get_current().cache_key
 end
 
 local function is_current_stream()
