@@ -216,12 +216,96 @@ function M.update_user_collection(subject_id, status, private)
   )
 end
 
--- 获取用户剧集
-function M.get_user_episodes(subject_id)
-  return M.get(
-    string.format("/v0/users/-/collections/%d/episodes", subject_id),
-    {offset = 0, limit = 1000, episode_type = 0}
-  )
+-- 仅更新已有收藏的状态。
+function M.update_user_collection_status(subject_id, status)
+  -- 只修改状态，保留隐私、评分、标签和短评。
+  return M.patch(string.format("/v0/users/-/collections/%d", subject_id), {type = status})
+end
+
+-- 拉取所有分页；任一页失败时不返回不完整列表。
+local function get_all_pages(uri, params)
+  local data = {}
+  params.offset = 0
+  params.limit = 100
+  while true do
+    local res = M.get(uri, params)
+    if not res or tonumber(res.status_code or 0) ~= 200
+      or not res.body or type(res.body.data) ~= "table" then
+      return res
+    end
+    local page = res.body.data
+    for _, item in ipairs(page) do
+      data[#data + 1] = item
+    end
+    params.offset = params.offset + #page
+    local total = tonumber(res.body.total)
+    if #page == 0 and total and params.offset < total then
+      return {status_code = 502, body = {error = "incomplete episode list"}}
+    end
+    if #page == 0 or (total and params.offset >= total) or (not total and #page < params.limit) then
+      res.body.data = data
+      return res
+    end
+  end
+end
+
+-- 不限定章节类型，让手动选择也能覆盖特别篇、OP、ED 等。
+function M.get_subject_episodes(subject_id)
+  return get_all_pages("/v0/episodes", {subject_id = subject_id})
+end
+
+function M.get_user_episodes(subject_id, opts)
+  local params = {}
+  if not (opts and opts.all_types) then
+    params.episode_type = 0
+  end
+  return get_all_pages(string.format("/v0/users/-/collections/%d/episodes", subject_id), params)
+end
+
+-- 缓存缺失时异步补齐列表，与当前匹配缓存保持相同的数据范围。
+function M.get_user_episodes_async(subject_id, callback, opts)
+  local items, offset = {}, 0
+  local cancelled, request_id = false, nil
+  local fetch_page
+  local function receive_page(res)
+    if cancelled then return end
+    local body = res and res.body
+    if not res or tonumber(res.status_code) ~= 200
+      or type(body) ~= "table" or type(body.data) ~= "table" then
+      callback(nil)
+      return
+    end
+    for _, item in ipairs(body.data) do
+      items[#items + 1] = item
+    end
+    offset = offset + #body.data
+    local total = tonumber(body.total)
+    if total and offset >= total then
+      callback({data = items, total = offset})
+      return
+    end
+    if #body.data == 0 then
+      -- 不将中途缺页误显示成完整列表。
+      callback(not total and {data = items, total = offset} or nil)
+      return
+    end
+    fetch_page()
+  end
+  fetch_page = function()
+    local params = {offset = offset, limit = 1000}
+    if not (opts and opts.all_types) then
+      params.episode_type = 0
+    end
+    request_id = http.get(
+      get_api_url() .. string.format("/v0/users/-/collections/%d/episodes", subject_id),
+      get_request_options({params = params, callback = receive_page, timeout = 30})
+    )
+  end
+  fetch_page()
+  return function()
+    cancelled = true
+    if request_id then mp.abort_async_command(request_id) end
+  end
 end
 
 -- 获取剧集状态

@@ -18,6 +18,10 @@ function M.request(url, options)
 
   -- 构建curl命令
   local args = {"curl", "-s", "-S", "-X", method}
+  if options.timeout then
+    table.insert(args, "--max-time")
+    table.insert(args, tostring(options.timeout))
+  end
 
   if proxy and proxy ~= "" then
     table.insert(args, "--proxy")
@@ -66,37 +70,38 @@ function M.request(url, options)
 
   table.insert(args, url)
 
-  -- 执行curl命令
-  local result = mp.command_native({
+  local command = {
     name = "subprocess",
     args = args,
     playback_only = false,
     capture_stdout = not detach,
     capture_stderr = not detach,
     detach = detach,
-  })
-
-
-  if result and result.status and result.status ~= 0 then
-    mp.msg.error("HTTP request subprocess failed: " .. (result.stderr or ""))
-  end
-
-  if detach then
-    return {status_code = 0, body = "", raw_body = "", detached = true}
-  end
-
-  local stdout = result and result.stdout or ""
-  -- 解析通过 -w 写入的状态码标记，格式为 "__HTTP_STATUS__:XXX" 位于输出末尾
-  local status_code = tonumber(stdout:match("__HTTP_STATUS__:(%d%d%d)%s*$"))
-  local body = stdout:gsub("\n__HTTP_STATUS__:%d%d%d%s*$", "")
-  local json_body = mp_utils.parse_json(body)
-
-
-  return {
-    status_code = status_code or 0,
-    body = json_body or body,
-    raw_body = body,
   }
+
+  local function parse_result(result)
+    if result and result.status and result.status ~= 0 then
+      mp.msg.error("HTTP request subprocess failed: " .. (result.stderr or ""))
+    end
+    if detach then
+      return {status_code = 0, body = "", raw_body = "", detached = true}
+    end
+    local stdout = result and result.stdout or ""
+    local status_code = tonumber(stdout:match("__HTTP_STATUS__:(%d%d%d)%s*$"))
+    local body = stdout:gsub("\n__HTTP_STATUS__:%d%d%d%s*$", "")
+    return {
+      status_code = status_code or 0,
+      body = mp_utils.parse_json(body) or body,
+      raw_body = body,
+    }
+  end
+
+  if options.callback then
+    return mp.command_native_async(command, function(success, result)
+      options.callback(parse_result(success and result or nil))
+    end)
+  end
+  return parse_result(mp.command_native(command))
 end
 
 -- GET请求

@@ -27,10 +27,21 @@ Options = {
   -- 自动点格子（开启/禁用）
   enable_auto_mark = true,
 
+  -- 最后一集同步后，全部正片已看时自动将条目标记为看过。
+  enable_auto_complete = false,
+
   -- 观看进度达到该比例时标记为“已看”（0~1）
   progress_mark_threshold = 0.9,
   storage1_batch_sync_threshold = 1,
   storage2_batch_sync_threshold = 4,
+
+  -- 番剧信息面板
+  panel_res_x = 1700,          -- ASS 虚拟画布宽 (面板布局基准)
+  panel_res_y = 1000,          -- ASS 虚拟画布高
+  panel_auto_show = "no",      -- 匹配到剧集时自动弹出面板
+  panel_dim_alpha = "90",      -- 背景压暗层透明度 (00 不透明 ~ FF 全透明)
+  panel_mpv_path = "mpv",      -- 下载封面用的 mpv; "mpv" 时自动从 PATH/前端查找
+  panel_cover_fill = "yes",    -- yes=封面裁剪填满; no=完整显示留同色边
 }
 
 local listeners = {}
@@ -80,6 +91,21 @@ local function normalize_boolean(value, default_value)
     end
   end
   return default_value
+end
+
+-- ==== 番剧信息面板 (bangumi_info) ====
+local panel_bool = function(v, def)
+    if v == nil then return def end
+    if type(v) == "boolean" then return v end
+    v = tostring(v):lower()
+    if v == "yes" or v == "true" or v == "1" then return true end
+    if v == "no" or v == "false" or v == "0" then return false end
+    return def
+end
+local panel_num = function(v, lo, hi, def)
+    local n = tonumber(v)
+    if not n or n < lo or n > hi then return def end
+    return math.floor(n)
 end
 
 local function clamp_progress_threshold(value, default_value)
@@ -186,6 +212,7 @@ local function apply_options()
   Options.storage1 = normalize_string(Options.storage1, "")
   Options.storage2 = normalize_string(Options.storage2, "")
   Options.enable_auto_mark = normalize_boolean(Options.enable_auto_mark, true)
+  Options.enable_auto_complete = normalize_boolean(Options.enable_auto_complete, false)
   Options.storage1_list = parse_storages(Options.storage1)
   Options.storage2_list = parse_storages(Options.storage2)
   Options.network_file_hosts_list = parse_comma_list(Options.network_file_hosts)
@@ -206,6 +233,20 @@ local function apply_options()
     4
   )
   Options.storage_groups = build_storage_groups()
+  Options.panel = Options.panel or {}
+
+  -- 番剧信息面板 (bangumi_info)
+  local p = Options.panel
+  p.res_x = panel_num(Options.panel_res_x, 320, 8192, 1700)
+  p.res_y = panel_num(Options.panel_res_y, 240, 8192, 1000)
+  p.auto_show = panel_bool(Options.panel_auto_show, false)
+  p.dim_alpha = (function()
+  local a = tostring(Options.panel_dim_alpha or "90"):lower()
+    return a:match("^%x%x$") and a or "90"
+  end)()
+  p.mpv_path = tostring(Options.panel_mpv_path or "mpv"):match("^%s*(.-)%s*$") or "mpv"
+  p.cover_fill = panel_bool(Options.panel_cover_fill, true)
+  public_config.panel = Options.panel
 
   -- 如果没有设置access_token，尝试从环境变量读取
   if not Options.bgm_access_token or Options.bgm_access_token == "" then
@@ -239,13 +280,14 @@ end)
 
 apply_options()
 
-
 local M = {}
 
 -- 配置对象
 M.config = public_config
 
 M.options = Options
+
+M.panel = public_config.panel
 
 function M.on_options_changed(cb)
   if type(cb) ~= "function" then
