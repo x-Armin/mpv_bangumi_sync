@@ -559,6 +559,58 @@ local function parse_option_title_candidate(raw_title, source)
   return parse_text_candidate(raw_title, source, true)
 end
 
+-- 本地缓存解析保留未知季数，不沿用流媒体标题默认第一季的约定。
+-- 目录只提取标题和季数，避免把番剧名中的数字误当成集数。
+function M.parse_local_name(name, is_directory)
+  local text = (name or ""):gsub("[_%.]", " ")
+  local season, conflict
+  local function remember_season(value)
+    value = tonumber(value)
+    if season and value and season ~= value then
+      conflict = true
+    end
+    season = season or value
+    return " "
+  end
+  local compact_season = text:match("%f[%w][sS](%d+)%s*[eE]%d+")
+  if compact_season then
+    remember_season(compact_season)
+  end
+  for _, pattern in ipairs({
+    "%f[%w][sS](%d+)%f[%W]",
+    "%f[%w][sS][eE][aA][sS][oO][nN]%s*(%d+)%f[%D]",
+    "%f[%w](%d+)[nrdsth]+%s+[sS][eE][aA][sS][oO][nN]%f[%W]",
+  }) do
+    text = text:gsub(pattern, remember_season)
+  end
+  for _, word in ipairs({"季", "部"}) do
+    text = text:gsub("(第%s*(.-)%s*" .. word .. ")", function(full, number)
+      number = trim(number)
+      local value = tonumber(number) or (is_chinese_number_text(number) and chinese_to_number(number))
+      return value and remember_season(value) or full
+    end)
+  end
+
+  local parsed = not is_directory and parse_text_candidate(text, "filename", false) or nil
+  if parsed and parsed.season_explicit then
+    remember_season(parsed.season)
+  end
+  local title = is_directory and title_replace(text) or (parsed and parsed.title)
+  local normalized = utils.normalize_search_title(title)
+  if normalized and (normalized:match("^%d+$") or normalized:match("^ep?%d+$")
+    or normalized:match("^s%d+e%d+$")) then
+    title, normalized = nil, nil
+  end
+  local episode = not is_directory and utils.extract_info_from_filename((name or "") .. ".mkv").episode or nil
+  return {
+    title = normalized and trim(title) or nil,
+    normalized_title = normalized,
+    season = season,
+    episode_no = parsed and parsed.episode_no or episode,
+    conflict = conflict == true,
+  }
+end
+
 local function parse_title()
   local path = mp.get_property("path")
   local filename = mp.get_property("filename/no-ext")
@@ -689,32 +741,40 @@ function M.get_current_title_info()
   end
 
   local is_network = path and utils.is_protocol(path)
+  local media_title = mp.get_property("media-title")
+  local filename_title = mp.get_property("filename/no-ext")
+  local path_title = nil
+  if path and path ~= "" then
+    if is_network then
+      path_title = url_tail_decode(path)
+    else
+      path_title = path:match("([^/\\]+)$") or path
+      path_title = path_title:match("^(.+)%.[^%.]+$") or path_title
+    end
+  end
+
+  local playlist_title = nil
+  if mp.get_property_native then
+    local playlist_pos = mp.get_property_number("playlist-pos")
+    local playlist = mp.get_property_native("playlist")
+    local item = playlist and playlist_pos and playlist[playlist_pos + 1] or nil
+    playlist_title = item and item.title or nil
+  end
+
   if is_network then
     add_candidate(mp.get_property("metadata/by-key/series"), "metadata-series", true)
     add_candidate(mp.get_property("metadata/by-key/ytdl_playlist_title"), "metadata-ytdl-playlist-title", true)
     add_candidate(mp.get_property("metadata/by-key/album"), "metadata-album", true)
     add_candidate(mp.get_property("options/title"), "options-title", true, parse_option_title_candidate)
-  end
-
-  add_candidate(mp.get_property("media-title"), "media-title", true)
-
-  if mp.get_property_native then
-    local playlist_pos = mp.get_property_number("playlist-pos")
-    local playlist = mp.get_property_native("playlist")
-    local item = playlist and playlist_pos and playlist[playlist_pos + 1] or nil
-    add_candidate(item and item.title, "playlist-title", false)
-  end
-
-  add_candidate(mp.get_property("filename/no-ext"), "filename", false)
-
-  if path and path ~= "" then
-    if is_network then
-      add_candidate(url_tail_decode(path), "url", false)
-    else
-      local filename = path:match("([^/\\]+)$") or path
-      filename = filename:match("^(.+)%.[^%.]+$") or filename
-      add_candidate(filename, "path", false)
-    end
+    add_candidate(media_title, "media-title", true)
+    add_candidate(playlist_title, "playlist-title", false)
+    add_candidate(filename_title, "filename", false)
+    add_candidate(path_title, "url", false)
+  else
+    add_candidate(filename_title, "filename", false)
+    add_candidate(path_title, "path", false)
+    add_candidate(media_title, "media-title", true)
+    add_candidate(playlist_title, "playlist-title", false)
   end
 
   local title_info = nil

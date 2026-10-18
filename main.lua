@@ -13,6 +13,7 @@ local mp_utils = require "mp.utils"
 local json_store = require "src.core.json_store"
 local episode_status = require "src.services.episode_status"
 local title_guess = require "src.title_guess"
+local match_identity = require "src.match_identity"
 local input = require "mp.input"
 local ui_menu = require "src.UI.uosc_menu"
 local ui_info = require "src.UI.draw_menu"
@@ -214,6 +215,10 @@ local function get_current_db_path()
     return utils.stable_url_key(file_path)
   end
   return mp.command_native({"normalize-path", file_path})
+end
+
+local function get_current_cache_key()
+  return match_identity.get_current().cache_key
 end
 
 local function is_current_stream()
@@ -505,7 +510,7 @@ local function bind_manual_bgm_and_reload(bgm_id, episode, title)
   if is_current_stream_mode() then
     stream_context.bind_current_subject(bgm_id)
   else
-    db.set_manual_bgm_id(get_current_db_path(), bgm_id)
+    db.set_manual_bgm_id(get_current_db_path(), bgm_id, get_current_cache_key())
   end
   init(nil, {
     force_refresh = true,
@@ -961,7 +966,7 @@ mp.register_script_message("bgm-info-menu-event", function(payload)
       mp.osd_message("无法获取当前文件路径", 2)
       return
     end
-    local db_record = db.get({ path = file_path })
+    local db_record = db.get({ path = file_path, cache_key = get_current_cache_key() })
     local bgm_id = (AnimeInfo and AnimeInfo.bgm_id) or (db_record and db_record.bgm_id)
     if not bgm_id then
       mp.osd_message("缺少缓存条目信息，无法刷新", 2)
